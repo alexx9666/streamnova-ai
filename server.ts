@@ -203,7 +203,7 @@ const handleRemuxStream = (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-cache, no-store');
 
   if (req.method === 'HEAD') {
-    return res.sendStatus(200);
+    return res.status(200).end();
   }
 
   const ss = (req.query.ss as string) || '0';
@@ -255,12 +255,26 @@ const handleRemuxStream = (req: Request, res: Response) => {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
+  let ffmpegStderr = '';
+  ffmpegProcess.stderr?.on('data', (d) => {
+    ffmpegStderr += d.toString();
+    if (ffmpegStderr.length > 2000) {
+      ffmpegStderr = ffmpegStderr.slice(-2000);
+    }
+  });
+
   ffmpegProcess.stdout.pipe(res);
 
   ffmpegProcess.on('error', (err) => {
     console.error('ffmpeg process error:', err);
     if (!res.headersSent) {
       res.redirect(`/api/proxy-stream?url=${encodeURIComponent(targetUrl)}`);
+    }
+  });
+
+  ffmpegProcess.on('close', (code) => {
+    if (code !== 0 && code !== null) {
+      console.warn(`ffmpeg process exited with code ${code}:`, ffmpegStderr.slice(-300));
     }
   });
 
