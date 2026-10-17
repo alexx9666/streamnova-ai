@@ -103,15 +103,7 @@ class VideoCacheEngine {
       const tx = db.transaction('video_metadata', 'readwrite');
       tx.objectStore('video_metadata').put(record);
 
-      // Also mirror to localStorage for instantaneous load on page launch
-      localStorage.setItem('nova_last_video', JSON.stringify({
-        videoId,
-        url: state.url,
-        title: record.title,
-        lastPosition: state.lastPosition,
-        duration: record.duration,
-        timestamp: Date.now(),
-      }));
+
     } catch (e) {
       console.warn('Could not save playback state to IndexedDB', e);
     }

@@ -101,7 +101,7 @@ class AudioEnhancerEngine {
   private analyser: AnalyserNode | null = null;
 
   private isConnected = false;
-  private settings: AudioEnhancerSettings = { ...PRESET_CONFIGS.cam_cleaner };
+  private settings: AudioEnhancerSettings = { ...PRESET_CONFIGS.original };
   private listeners: Set<(settings: AudioEnhancerSettings) => void> = new Set();
 
   /**

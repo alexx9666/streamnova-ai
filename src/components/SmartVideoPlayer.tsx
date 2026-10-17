@@ -1,9 +1,8 @@
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize2, Minimize2,
-  Settings, Languages, DownloadCloud, Sparkles, CheckCircle2, ChevronRight,
-  Sun, Check, HardDrive, RefreshCw, Sliders, Wifi, ArrowLeft,
-  Activity, ShieldCheck, Zap, Gauge
+  Settings, Sparkles, CheckCircle2, ChevronRight, Sun, Check, HardDrive,
+  Sliders, Wifi, ArrowLeft, ShieldCheck, Zap, Smartphone
 } from 'lucide-react';
 import { VideoSource, CacheStats } from '../types';
 import { videoCacheEngine } from '../services/videoCacheEngine';
@@ -38,13 +37,16 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   const [brightness, setBrightness] = useState(100);
   const [aspectRatio, setAspectRatio] = useState<'contain' | 'cover' | 'fill'>('contain');
 
-  // Scrubbing & Seeking states (prevents rubber-banding & buffering loops)
+  // Screen Rotation state (Dedicated mobile landscape orientation toggle)
+  const [isRotatedLandscape, setIsRotatedLandscape] = useState(false);
+
+  // Scrubbing & Seeking states
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubTime, setScrubTime] = useState(0);
   const [hoverPosition, setHoverPosition] = useState<{ percent: number; time: number; x: number } | null>(null);
   const [isSeeking, setIsSeeking] = useState(false);
 
-  // Engine Mode: 'turbo' (Fast Player: 100% bandwidth to current stream & instant seek) vs 'smart_buffer' (Zero-Buffer chunk caching)
+  // Streaming Engine Mode
   const [streamingMode, setStreamingMode] = useState<'smart_buffer' | 'turbo'>('turbo');
   const [bufferAheadSec, setBufferAheadSec] = useState(0);
   const [nativeBufferedRatio, setNativeBufferedRatio] = useState(0);
@@ -60,12 +62,9 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   // Audio Enhancer state
   const [audioSettings, setAudioSettings] = useState<AudioEnhancerSettings>(audioEnhancerEngine.getSettings());
 
-  // Resume state
-  const [resumePrompt, setResumePrompt] = useState<{ position: number; visible: boolean } | null>(null);
-
   // Gesture indicators
   const [gestureHUD, setGestureHUD] = useState<{
-    type: 'volume' | 'brightness' | 'seek';
+    type: 'volume' | 'brightness' | 'seek' | 'rotate';
     value: string;
     icon?: React.ReactNode;
   } | null>(null);
@@ -74,27 +73,30 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   // Loading & Error states
   const [videoError, setVideoError] = useState<{ message: string } | null>(null);
   const [isLoadingStream, setIsLoadingStream] = useState<boolean>(true);
-  const [activeServerIdx, setActiveServerIdx] = useState<number>(0);
-
-  // Settings menu toggle
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
 
-  // Touch & Controls timer tracking
+  // Touch & Controls timers
   const touchStartRef = useRef<{ x: number; y: number; time: number; handledDoubleTap?: boolean } | null>(null);
   const lastTapRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const controlsTimeoutRef = useRef<any>(null);
   const prefetchUnsubscribeRef = useRef<(() => void) | null>(null);
 
-  // Stream URL calculation: Always use range-supporting proxy URL so seeking works via HTTP 206
-  const currentServer = video.servers && video.servers[activeServerIdx] ? video.servers[activeServerIdx] : null;
-  const rawStreamUrl = currentServer ? currentServer.url : video.url;
+  // Effective Stream URL: Always use HTTP 206 range proxy for seamless seeking
+  const rawStreamUrl = video.url;
   const effectiveStreamUrl = video.isLocal && video.file
     ? URL.createObjectURL(video.file)
-    : (currentServer && currentServer.proxyUrl ? currentServer.proxyUrl : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`));
+    : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`);
 
   // Subscribe to Audio Enhancer Engine changes
   useEffect(() => {
-    const unsub = audioEnhancerEngine.subscribe((s) => setAudioSettings(s));
+    const unsub = audioEnhancerEngine.subscribe((s) => {
+      setAudioSettings(s);
+      // Only attach Web Audio when DSP is explicitly enabled by user
+      if (s.enabled && videoRef.current) {
+        audioEnhancerEngine.attachToElement(videoRef.current);
+        audioEnhancerEngine.resumeContext();
+      }
+    });
     return () => unsub();
   }, []);
 
@@ -104,7 +106,6 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     setIsLoadingStream(true);
     setIsSeeking(false);
     setIsScrubbing(false);
-    setActiveServerIdx(0);
     setCurrentTime(0);
     setScrubTime(0);
     if (video.duration) {
@@ -112,7 +113,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     }
   }, [video.id, video.url]);
 
-  // Auto-hide controls timer (Netflix style 3.2s)
+  // Auto-hide controls timer (3.0s)
   const scheduleControlsHide = useCallback(() => {
     clearTimeout(controlsTimeoutRef.current);
     setControlsVisible(true);
@@ -121,40 +122,8 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         setControlsVisible(false);
         setShowSettingsMenu(false);
       }
-    }, 3200);
+    }, 3000);
   }, [isPlaying, isScrubbing]);
-
-  // Auto-attach Audio Enhancer Engine when video is ready
-  const tryAttachAudioEngine = useCallback(() => {
-    if (videoRef.current) {
-      audioEnhancerEngine.attachToElement(videoRef.current);
-      audioEnhancerEngine.resumeContext();
-    }
-  }, []);
-
-  // Check saved state for auto-restore on video load
-  useEffect(() => {
-    const checkResume = async () => {
-      const meta = await videoCacheEngine.getVideoMetadata(video.id);
-      if (meta && meta.lastPosition > 5 && (!meta.duration || meta.lastPosition < meta.duration - 10)) {
-        setResumePrompt({ position: meta.lastPosition, visible: true });
-      }
-
-      const cachedIndices = await videoCacheEngine.getCachedChunkIndices(video.id);
-      const totalBytes = video.sizeBytes || 80 * 1024 * 1024;
-      const totalChunks = Math.ceil(totalBytes / (2 * 1024 * 1024));
-      const percentage = totalChunks > 0 ? Math.min(100, Math.round((cachedIndices.size / totalChunks) * 100)) : 0;
-
-      setCacheStats((prev) => ({
-        ...prev,
-        cachedBytes: cachedIndices.size * 2 * 1024 * 1024,
-        percentage,
-        isFullyCached: percentage >= 100,
-      }));
-    };
-
-    checkResume();
-  }, [video.id, video.sizeBytes]);
 
   // Background Prefetch Controller (Zero-Buffer mode)
   useEffect(() => {
@@ -192,29 +161,11 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     };
   }, [video.id, effectiveStreamUrl, video.sizeBytes, video.isLocal, streamingMode]);
 
-  // Save playback progress periodically
-  useEffect(() => {
-    if (!duration || currentTime <= 0) return;
-
-    const timer = setInterval(() => {
-      videoCacheEngine.savePlaybackState(video.id, {
-        url: video.url,
-        title: video.title,
-        lastPosition: currentTime,
-        duration,
-        sizeBytes: video.sizeBytes || undefined,
-      });
-    }, 4000);
-
-    return () => clearInterval(timer);
-  }, [video.id, video.url, video.title, currentTime, duration, video.sizeBytes]);
-
   // Track playback time
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
     const cur = videoRef.current.currentTime;
 
-    // Only update currentTime if user is NOT currently dragging the scrub bar
     if (!isScrubbing) {
       setCurrentTime(cur);
     }
@@ -235,7 +186,6 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
   const togglePlay = () => {
     if (!videoRef.current) return;
-    tryAttachAudioEngine();
 
     if (isPlaying) {
       videoRef.current.pause();
@@ -249,7 +199,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     }
   };
 
-  // ROBUST SEEK ENGINE: Executes exactly once on user release/click without HTTP flooding
+  // ROBUST ATOMIC SEEK: Executes exactly once on user release/click without HTTP flooding
   const performSeek = (targetSec: number) => {
     if (!videoRef.current) return;
     const maxDur = duration || 100;
@@ -259,10 +209,10 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     setCurrentTime(safeTarget);
     setScrubTime(safeTarget);
 
-    // 1. Direct browser seek via HTTP 206 Partial Content Range
+    // Direct browser seek via HTTP 206 Partial Content Range
     videoRef.current.currentTime = safeTarget;
 
-    // 2. Reprioritize background chunk cache ahead of the new position
+    // Reprioritize background chunk cache ahead of the new position if enabled
     if (streamingMode === 'smart_buffer' && duration > 0) {
       const totalBytes = video.sizeBytes || 80 * 1024 * 1024;
       prefetchUnsubscribeRef.current = videoCacheEngine.seekPrefetch(
@@ -288,6 +238,31 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     if (!videoRef.current) return;
     const target = Math.max(0, Math.min(duration || 100, videoRef.current.currentTime + deltaSec));
     performSeek(target);
+  };
+
+  // Screen Rotation Toggle (Landscape 90° for Mobile)
+  const toggleScreenRotate = () => {
+    const next = !isRotatedLandscape;
+    setIsRotatedLandscape(next);
+
+    // Attempt Screen Orientation API lock
+    try {
+      const orientation = screen.orientation || (screen as any).mozOrientation || (screen as any).msOrientation;
+      if (orientation && orientation.lock) {
+        if (next) {
+          orientation.lock('landscape').catch(() => {});
+        } else {
+          orientation.unlock();
+        }
+      }
+    } catch {}
+
+    setGestureHUD({
+      type: 'rotate',
+      value: next ? 'Landscape (Rotated)' : 'Normal Orientation',
+      icon: <RotateCw className="w-6 h-6 text-red-500 animate-spin" />,
+    });
+    setTimeout(() => setGestureHUD(null), 1200);
   };
 
   // Timeline Scrubbing Event Handlers
@@ -345,18 +320,19 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     if (!videoRef.current) return;
     const clamped = Math.max(0, Math.min(1, newVol));
     videoRef.current.volume = clamped;
+    videoRef.current.muted = clamped === 0;
     setVolume(clamped);
     setIsMuted(clamped === 0);
   };
 
   const toggleMute = () => {
     if (!videoRef.current) return;
-    tryAttachAudioEngine();
     if (isMuted) {
       videoRef.current.volume = volume || 0.5;
+      videoRef.current.muted = false;
       setIsMuted(false);
     } else {
-      videoRef.current.volume = 0;
+      videoRef.current.muted = true;
       setIsMuted(true);
     }
   };
@@ -394,6 +370,8 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         toggleMute();
       } else if (e.key === 'f' || e.key === 'F') {
         toggleFullscreen();
+      } else if (e.key === 'r' || e.key === 'R') {
+        toggleScreenRotate();
       } else if (e.key === 'c' || e.key === 'C') {
         onOpenAudioCleaner();
       }
@@ -401,7 +379,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, currentTime, volume, isMuted, duration]);
+  }, [isPlaying, currentTime, volume, isMuted, duration, isRotatedLandscape]);
 
   // Touch handlers for mobile
   const handleTouchStart = (e: React.TouchEvent) => {
@@ -419,7 +397,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
     if (lastTapRef.current && now - lastTapRef.current.time < 300) {
       const dist = Math.hypot(x - lastTapRef.current.x, y - lastTapRef.current.y);
-      if (dist < 50) {
+      if (dist < 60) {
         if (x < width * 0.35) {
           seekRelative(-10);
           setDoubleTapAnimation('left');
@@ -491,7 +469,6 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  // Time displayed to the user: follows dragging thumb smoothly without rubber-banding
   const displayTime = isScrubbing ? scrubTime : currentTime;
   const progressRatio = duration > 0 ? Math.max(0, Math.min(1, displayTime / duration)) : 0;
   const speedOptions = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
@@ -499,7 +476,11 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   return (
     <div
       ref={containerRef}
-      className="relative w-full aspect-video md:aspect-[21/9] max-h-[85vh] bg-black select-none overflow-hidden rounded-2xl shadow-2xl border border-zinc-800/80 group font-sans"
+      className={`relative select-none overflow-hidden bg-black font-sans transition-all duration-300 ${
+        isRotatedLandscape
+          ? 'fixed inset-0 z-50 w-screen h-screen rotate-0'
+          : 'w-full aspect-video md:aspect-[21/9] max-h-[85vh] rounded-2xl shadow-2xl border border-zinc-800/80 group'
+      }`}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
@@ -507,11 +488,10 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
       onClick={() => setControlsVisible((v) => !v)}
       style={{ filter: `brightness(${brightness}%)` }}
     >
-      {/* Native Range-Stream Video Element */}
+      {/* Native Range-Stream Video Element (Unrestricted native audio) */}
       <video
         ref={videoRef}
         src={effectiveStreamUrl}
-        crossOrigin="anonymous"
         className={`w-full h-full ${
           aspectRatio === 'cover'
             ? 'object-cover'
@@ -520,18 +500,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             : 'object-contain'
         }`}
         playsInline
-        preload="metadata"
+        preload="auto"
         onTimeUpdate={handleTimeUpdate}
         onLoadedData={() => {
           setIsLoadingStream(false);
           setIsSeeking(false);
           setVideoError(null);
-          tryAttachAudioEngine();
+          if (videoRef.current) {
+            videoRef.current.volume = volume;
+            videoRef.current.muted = isMuted;
+          }
         }}
         onCanPlay={() => {
           setIsLoadingStream(false);
           setIsSeeking(false);
-          tryAttachAudioEngine();
         }}
         onWaiting={() => setIsLoadingStream(true)}
         onSeeking={() => setIsSeeking(true)}
@@ -543,18 +525,16 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
           setIsLoadingStream(false);
           setIsSeeking(false);
           setIsPlaying(true);
-          tryAttachAudioEngine();
         }}
         onLoadedMetadata={() => {
           if (videoRef.current) {
             setDuration(videoRef.current.duration);
+            videoRef.current.volume = volume;
+            videoRef.current.muted = isMuted;
           }
           setIsLoadingStream(false);
         }}
-        onPlay={() => {
-          setIsPlaying(true);
-          tryAttachAudioEngine();
-        }}
+        onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onError={() => {
           setIsLoadingStream(false);
@@ -566,206 +546,160 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         onEnded={() => setIsPlaying(false)}
       />
 
-      {/* Netflix Loading Spinner (Only shown when waiting for network) */}
+      {/* Loading Spinner */}
       {(isLoadingStream || isSeeking) && !videoError && (
         <div className="absolute inset-0 z-20 pointer-events-none flex flex-col items-center justify-center bg-black/40 backdrop-blur-[1px] p-4 text-center">
-          <div className="relative w-14 h-14 flex items-center justify-center">
-            <div className="w-14 h-14 rounded-full border-4 border-red-600/20 border-t-red-600 animate-spin" />
-            <div className="absolute w-7 h-7 bg-red-600/10 rounded-full" />
+          <div className="relative w-12 h-12 flex items-center justify-center">
+            <div className="w-12 h-12 rounded-full border-3 border-red-600/20 border-t-red-600 animate-spin" />
+            <div className="absolute w-5 h-5 bg-red-600/10 rounded-full" />
           </div>
           <span className="text-xs text-white/95 font-semibold mt-3 tracking-wide drop-shadow-md">
             {isSeeking ? 'Seeking Frame...' : 'Buffering Stream...'}
           </span>
-          {bufferAheadSec > 0 && !isSeeking && (
-            <span className="text-[11px] text-zinc-300 mt-0.5">
-              +{bufferAheadSec}s buffer protected
-            </span>
-          )}
         </div>
       )}
 
       {/* Double-Tap Seek Animation HUD */}
       {doubleTapAnimation && (
         <div
-          className={`absolute top-1/2 -translate-y-1/2 z-30 pointer-events-none flex flex-col items-center justify-center w-28 h-28 rounded-full bg-red-600/30 backdrop-blur-md text-white animate-in zoom-in-50 duration-200 ${
-            doubleTapAnimation === 'left' ? 'left-12' : 'right-12'
+          className={`absolute top-1/2 -translate-y-1/2 z-30 pointer-events-none flex flex-col items-center justify-center w-24 h-24 rounded-full bg-red-600/30 backdrop-blur-md text-white animate-in zoom-in-50 duration-200 ${
+            doubleTapAnimation === 'left' ? 'left-8 sm:left-12' : 'right-8 sm:right-12'
           }`}
         >
           {doubleTapAnimation === 'left' ? (
-            <RotateCcw className="w-8 h-8 animate-spin" />
+            <RotateCcw className="w-7 h-7 animate-spin" />
           ) : (
-            <RotateCw className="w-8 h-8 animate-spin" />
+            <RotateCw className="w-7 h-7 animate-spin" />
           )}
-          <span className="text-xs font-bold mt-1">10 SECONDS</span>
+          <span className="text-[10px] font-bold mt-1">10 SECONDS</span>
         </div>
       )}
 
-      {/* Gesture HUD for Brightness/Volume swipe */}
+      {/* Gesture HUD */}
       {gestureHUD && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none bg-black/85 backdrop-blur-md border border-zinc-700/80 px-6 py-4 rounded-2xl flex flex-col items-center gap-2 text-white shadow-2xl">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-30 pointer-events-none bg-black/85 backdrop-blur-md border border-zinc-700/80 px-5 py-3.5 rounded-2xl flex flex-col items-center gap-2 text-white shadow-2xl">
           {gestureHUD.icon}
-          <span className="font-mono text-sm font-bold">{gestureHUD.value}</span>
+          <span className="font-mono text-xs font-bold">{gestureHUD.value}</span>
         </div>
       )}
 
-      {/* Auto-Resume Prompt */}
-      {resumePrompt && resumePrompt.visible && (
-        <div
-          onClick={(e) => e.stopPropagation()}
-          className="absolute top-16 left-6 z-40 bg-zinc-950/95 border border-red-600/50 rounded-xl p-3 shadow-2xl flex items-center gap-3 animate-in slide-in-from-left duration-200 text-xs text-white"
-        >
-          <span>Resume from {formatTime(resumePrompt.position)}?</span>
-          <button
-            onClick={() => {
-              performSeek(resumePrompt.position);
-              setResumePrompt(null);
-            }}
-            className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg transition-colors cursor-pointer"
-          >
-            Resume
-          </button>
-          <button
-            onClick={() => setResumePrompt(null)}
-            className="text-zinc-400 hover:text-white cursor-pointer"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {/* NETFLIX-STYLE CINEMATIC CONTROLS OVERLAY */}
+      {/* RESPONSIVE MOBILE-COMPATIBLE OVERLAY */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`absolute inset-0 z-20 flex flex-col justify-between p-4 sm:p-6 bg-gradient-to-t from-black/95 via-transparent to-black/85 transition-opacity duration-300 ${
+        className={`absolute inset-0 z-20 flex flex-col justify-between p-3 sm:p-5 bg-gradient-to-t from-black/95 via-transparent to-black/80 transition-opacity duration-300 ${
           controlsVisible || isScrubbing ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
       >
         {/* Top Header Bar */}
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3 min-w-0">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             {onBackToBrowse && (
               <button
                 onClick={onBackToBrowse}
-                className="p-2 rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-white transition-colors cursor-pointer border border-zinc-700/60"
+                className="p-1.5 rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-white transition-colors cursor-pointer border border-zinc-700/60"
                 title="Back to Catalog"
               >
-                <ArrowLeft className="w-5 h-5" />
+                <ArrowLeft className="w-4 h-4" />
               </button>
             )}
             <div className="min-w-0">
               <div className="flex items-center gap-2">
-                <span className="px-2 py-0.5 text-[9px] font-black tracking-widest uppercase bg-red-600 text-white rounded shadow-sm">
+                <span className="px-1.5 py-0.5 text-[8px] font-black tracking-widest uppercase bg-red-600 text-white rounded shadow-sm">
                   STREAMNOVA
                 </span>
-                <span className="text-xs font-bold text-white truncate max-w-[180px] sm:max-w-md">
+                <span className="text-xs font-bold text-white truncate max-w-[140px] sm:max-w-xs md:max-w-md">
                   {video.title}
                 </span>
-              </div>
-              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-zinc-400">
-                <span className="text-emerald-400 font-semibold flex items-center gap-1">
-                  <ShieldCheck className="w-3 h-3" /> HTTP 206 Direct Seek
-                </span>
-                <span>•</span>
-                <span className="text-zinc-300">
-                  {streamingMode === 'turbo' ? '⚡ Turbo Fast Stream' : '🛡️ Zero-Buffer Cache'}
-                </span>
-                {bufferAheadSec > 0 && (
-                  <>
-                    <span>•</span>
-                    <span className="text-red-400 font-mono font-medium">
-                      +{bufferAheadSec}s Buffer Protected
-                    </span>
-                  </>
-                )}
               </div>
             </div>
           </div>
 
           {/* Top Right Action Pills */}
-          <div className="flex items-center gap-2 flex-wrap justify-end">
-            {/* Audio Cleaner Trigger */}
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Audio Cleaner Button */}
             <button
               onClick={onOpenAudioCleaner}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer border ${
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold transition-all cursor-pointer border ${
                 audioSettings.enabled
-                  ? 'bg-red-600 text-white border-red-500 shadow-lg shadow-red-600/30 hover:bg-red-700'
+                  ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30'
                   : 'bg-zinc-900/80 text-zinc-300 border-zinc-700 hover:text-white hover:bg-zinc-800'
               }`}
-              title="Open Cam Audio Cleaner & Voice Clarity Studio"
+              title="Open Cam Audio Cleaner"
             >
-              <Sparkles className="w-3.5 h-3.5" />
-              <span>{audioSettings.enabled ? 'Audio Cleaner: ON' : 'Clean Audio'}</span>
-              {audioSettings.enabled && (
-                <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-              )}
+              <Sparkles className="w-3 h-3 text-red-400" />
+              <span className="hidden sm:inline">{audioSettings.enabled ? 'Audio: Clean' : 'Clean Audio'}</span>
+              <span className="sm:hidden">Audio</span>
             </button>
 
-            {/* Turbo Fast Stream vs Zero-Buffer Toggle */}
+            {/* Screen Rotate Button */}
             <button
-              onClick={() => {
-                const next = streamingMode === 'turbo' ? 'smart_buffer' : 'turbo';
-                setStreamingMode(next);
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-all cursor-pointer border ${
-                streamingMode === 'turbo'
-                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-sm'
-                  : 'bg-emerald-950/80 text-emerald-300 border-emerald-600/60 shadow-sm'
+              onClick={toggleScreenRotate}
+              className={`p-1.5 rounded-full border transition-all cursor-pointer ${
+                isRotatedLandscape
+                  ? 'bg-red-600 text-white border-red-500 shadow-md shadow-red-600/30'
+                  : 'bg-zinc-900/80 text-zinc-300 border-zinc-700 hover:text-white'
               }`}
-              title="Toggle between Turbo Instant Seek and Background Pre-caching"
+              title="Rotate Screen (Landscape / Portrait)"
             >
-              {streamingMode === 'turbo' ? (
-                <>
-                  <Zap className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Turbo Seek Mode</span>
-                </>
-              ) : (
-                <>
-                  <Wifi className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Zero-Buffer Mode</span>
-                </>
-              )}
+              <RotateCw className="w-3.5 h-3.5" />
             </button>
 
             {/* Settings */}
             <button
               onClick={() => setShowSettingsMenu((v) => !v)}
-              className="p-2 rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors cursor-pointer border border-zinc-700/60"
+              className="p-1.5 rounded-full bg-zinc-900/80 hover:bg-zinc-800 text-zinc-300 hover:text-white transition-colors cursor-pointer border border-zinc-700/60"
               title="Settings"
             >
-              <Settings className="w-4 h-4" />
+              <Settings className="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
 
-        {/* Center Play/Pause Large Action */}
-        <div className="self-center flex items-center justify-center">
+        {/* Center Big Touch Controls: -10s, Play/Pause, +10s */}
+        <div className="self-center flex items-center justify-center gap-5 sm:gap-8">
+          <button
+            onClick={() => seekRelative(-10)}
+            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/50 hover:bg-zinc-800/80 text-zinc-200 hover:text-white flex items-center justify-center transition-all cursor-pointer border border-zinc-700/40"
+            title="Rewind 10s"
+          >
+            <RotateCcw className="w-5 h-5" />
+          </button>
+
           <button
             onClick={togglePlay}
-            className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-black/60 hover:bg-red-600/90 backdrop-blur-md border-2 border-white/20 hover:border-red-500 flex items-center justify-center text-white transition-all transform active:scale-95 shadow-2xl cursor-pointer hover:shadow-red-600/40"
+            className="w-14 h-14 sm:w-18 sm:h-18 rounded-full bg-red-600/90 hover:bg-red-600 backdrop-blur-md border border-white/20 flex items-center justify-center text-white transition-all transform active:scale-95 shadow-2xl cursor-pointer hover:shadow-red-600/50"
           >
             {isPlaying ? (
-              <Pause className="w-7 h-7 sm:w-8 sm:h-8 text-white fill-white" />
+              <Pause className="w-6 h-6 sm:w-7 sm:h-7 text-white fill-white" />
             ) : (
-              <Play className="w-7 h-7 sm:w-8 sm:h-8 text-white fill-white ml-1" />
+              <Play className="w-6 h-6 sm:w-7 sm:h-7 text-white fill-white ml-0.5" />
             )}
+          </button>
+
+          <button
+            onClick={() => seekRelative(10)}
+            className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-black/50 hover:bg-zinc-800/80 text-zinc-200 hover:text-white flex items-center justify-center transition-all cursor-pointer border border-zinc-700/40"
+            title="Forward 10s"
+          >
+            <RotateCw className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Bottom Netflix Control Bar */}
-        <div className="flex flex-col gap-2.5">
-          {/* FLAWLESS SEEK TIMELINE with Hover Preview Pill */}
+        {/* Bottom Control Bar */}
+        <div className="flex flex-col gap-2">
+          {/* FLAWLESS SEEK TIMELINE with Hover Tooltip */}
           <div
             ref={timelineRef}
             onPointerDown={handleTimelinePointerDown}
             onPointerMove={handleTimelinePointerMove}
             onPointerUp={handleTimelinePointerUp}
             onPointerLeave={handleTimelinePointerLeave}
-            className="relative group/timeline py-3 cursor-pointer touch-none"
+            className="relative group/timeline py-2.5 cursor-pointer touch-none"
           >
             {/* Hover Tooltip Timestamp Pill */}
             {hoverPosition && (
               <div
-                className="absolute -top-7 -translate-x-1/2 pointer-events-none px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-white font-mono text-[11px] shadow-xl z-30"
+                className="absolute -top-7 -translate-x-1/2 pointer-events-none px-2 py-0.5 rounded bg-zinc-900 border border-zinc-700 text-white font-mono text-[10px] shadow-xl z-30"
                 style={{ left: `${hoverPosition.percent * 100}%` }}
               >
                 {formatTime(hoverPosition.time)}
@@ -773,22 +707,14 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             )}
 
             {/* Base timeline background */}
-            <div className="relative w-full h-1.5 group-hover/timeline:h-2.5 bg-zinc-800/90 rounded-full overflow-hidden transition-all">
-              {/* Layer 1: Background Persistent Cached Chunks (IndexedDB) */}
-              {streamingMode === 'smart_buffer' && (
-                <div
-                  className="absolute top-0 bottom-0 left-0 bg-red-950/60 transition-all duration-300"
-                  style={{ width: `${cacheStats.percentage}%` }}
-                />
-              )}
-
-              {/* Layer 2: Native Playback Buffer */}
+            <div className="relative w-full h-1.5 group-hover/timeline:h-2 bg-zinc-800/90 rounded-full overflow-hidden transition-all">
+              {/* Native Playback Buffer */}
               <div
                 className="absolute top-0 bottom-0 left-0 bg-zinc-600/70 transition-all duration-150"
                 style={{ width: `${nativeBufferedRatio * 100}%` }}
               />
 
-              {/* Layer 3: Playhead Progress (Netflix Red) */}
+              {/* Playhead Progress (Netflix Red) */}
               <div
                 className="absolute top-0 bottom-0 left-0 bg-red-600 shadow-md shadow-red-600/50"
                 style={{ width: `${progressRatio * 100}%` }}
@@ -797,42 +723,26 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
             {/* Scrubber thumb handle */}
             <div
-              className={`absolute top-1/2 -translate-y-1/2 w-4 h-4 bg-red-600 border-2 border-white rounded-full shadow-lg pointer-events-none transition-transform ${
+              className={`absolute top-1/2 -translate-y-1/2 w-3.5 h-3.5 bg-red-600 border-2 border-white rounded-full shadow-lg pointer-events-none transition-transform ${
                 isScrubbing ? 'scale-125 opacity-100' : 'opacity-0 group-hover/timeline:opacity-100'
               }`}
-              style={{ left: `calc(${progressRatio * 100}% - 8px)` }}
+              style={{ left: `calc(${progressRatio * 100}% - 7px)` }}
             />
           </div>
 
           {/* Bottom Row Controls */}
           <div className="flex items-center justify-between text-xs text-zinc-300">
-            {/* Left Controls: Play, -10s, +10s, Volume, Timestamps */}
-            <div className="flex items-center gap-3">
+            {/* Left Controls: Play, Volume, Timestamps */}
+            <div className="flex items-center gap-2.5">
               <button
                 onClick={togglePlay}
                 className="p-1 hover:text-white text-zinc-200 transition-colors cursor-pointer"
               >
-                {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
-              </button>
-
-              <button
-                onClick={() => seekRelative(-10)}
-                className="p-1 hover:text-white text-zinc-300 transition-colors cursor-pointer"
-                title="Rewind 10 Seconds"
-              >
-                <RotateCcw className="w-4 h-4" />
-              </button>
-
-              <button
-                onClick={() => seekRelative(10)}
-                className="p-1 hover:text-white text-zinc-300 transition-colors cursor-pointer"
-                title="Forward 10 Seconds"
-              >
-                <RotateCw className="w-4 h-4" />
+                {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
               </button>
 
               {/* Volume Slider */}
-              <div className="flex items-center gap-2 group/vol">
+              <div className="flex items-center gap-1.5 group/vol">
                 <button onClick={toggleMute} className="p-1 hover:text-white text-zinc-300 cursor-pointer">
                   {isMuted || volume === 0 ? <VolumeX className="w-4 h-4 text-red-500" /> : <Volume2 className="w-4 h-4" />}
                 </button>
@@ -843,34 +753,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
                   step={0.05}
                   value={isMuted ? 0 : volume}
                   onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
-                  className="w-16 sm:w-20 h-1 bg-zinc-700 accent-red-600 rounded cursor-pointer"
+                  className="w-14 sm:w-20 h-1 bg-zinc-700 accent-red-600 rounded cursor-pointer hidden sm:block"
                 />
               </div>
 
               {/* Timestamps */}
-              <div className="font-mono text-[11px] text-zinc-400">
+              <div className="font-mono text-[10px] sm:text-[11px] text-zinc-400">
                 <span className="text-white font-semibold">{formatTime(displayTime)}</span>
                 <span className="mx-1 text-zinc-600">/</span>
                 <span>{formatTime(duration)}</span>
               </div>
             </div>
 
-            {/* Right Controls: Audio Studio, Speed, Aspect, Fullscreen */}
+            {/* Right Controls: Speed, Screen Rotate, Fullscreen */}
             <div className="flex items-center gap-2">
-              {/* Audio Cleaner Quick Button */}
-              <button
-                onClick={onOpenAudioCleaner}
-                className={`hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold border transition-all cursor-pointer ${
-                  audioSettings.enabled
-                    ? 'bg-red-600/20 text-red-400 border-red-600/40'
-                    : 'bg-zinc-800/80 text-zinc-400 border-zinc-700 hover:text-white'
-                }`}
-                title="Audio Clarity & Cam Denoise Engine"
-              >
-                <Sliders className="w-3 h-3 text-red-500" />
-                <span>{audioSettings.enabled ? 'Audio: Cleaned' : 'Clean Audio'}</span>
-              </button>
-
               {/* Speed Selector */}
               <button
                 onClick={() => {
@@ -879,23 +775,21 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
                   setPlaybackSpeed(nextSpeed);
                   if (videoRef.current) videoRef.current.playbackRate = nextSpeed;
                 }}
-                className="px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-[11px] font-mono text-zinc-200 border border-zinc-700 cursor-pointer"
+                className="px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-[10px] font-mono text-zinc-200 border border-zinc-700 cursor-pointer"
                 title="Playback Speed"
               >
                 {playbackSpeed}x
               </button>
 
-              {/* Aspect Ratio Toggle */}
+              {/* Screen Rotate Button */}
               <button
-                onClick={() => {
-                  const modes: ('contain' | 'cover' | 'fill')[] = ['contain', 'cover', 'fill'];
-                  const next = modes[(modes.indexOf(aspectRatio) + 1) % modes.length];
-                  setAspectRatio(next);
-                }}
-                className="hidden sm:block px-2 py-0.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-[11px] uppercase tracking-wider text-zinc-300 border border-zinc-700 cursor-pointer"
-                title="Aspect Ratio"
+                onClick={toggleScreenRotate}
+                className={`p-1 hover:text-white transition-colors cursor-pointer ${
+                  isRotatedLandscape ? 'text-red-500' : 'text-zinc-300'
+                }`}
+                title="Rotate Screen Landscape"
               >
-                {aspectRatio}
+                <RotateCw className="w-4 h-4" />
               </button>
 
               {/* Fullscreen */}
@@ -911,14 +805,14 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         </div>
       </div>
 
-      {/* Floating Settings Menu Modal */}
+      {/* Settings Modal */}
       {showSettingsMenu && (
         <div
           onClick={(e) => e.stopPropagation()}
-          className="absolute right-4 bottom-16 z-40 w-72 bg-zinc-950/95 backdrop-blur-xl border border-zinc-800 rounded-2xl p-4 shadow-2xl animate-in fade-in zoom-in-95 duration-150 text-xs text-zinc-200 space-y-3.5"
+          className="absolute right-4 bottom-14 z-40 w-68 bg-zinc-950/95 backdrop-blur-xl border border-zinc-800 rounded-2xl p-4 shadow-2xl text-xs text-zinc-200 space-y-3"
         >
           <div className="flex items-center justify-between pb-2 border-b border-zinc-800">
-            <span className="font-bold text-white tracking-wide">Stream & Player Engine</span>
+            <span className="font-bold text-white tracking-wide">Player Controls</span>
             <button
               onClick={() => setShowSettingsMenu(false)}
               className="text-zinc-400 hover:text-white text-sm cursor-pointer"
@@ -927,54 +821,53 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             </button>
           </div>
 
-          {/* Engine Mode Selector */}
-          <div className="space-y-1.5">
-            <span className="text-[11px] font-semibold text-zinc-300">Streaming Engine Mode</span>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button
-                onClick={() => setStreamingMode('turbo')}
-                className={`py-1.5 px-2 rounded-lg text-center text-[11px] font-semibold transition-all cursor-pointer ${
-                  streamingMode === 'turbo'
-                    ? 'bg-red-600 text-white font-bold shadow-md shadow-red-600/30'
-                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                }`}
-              >
-                ⚡ Turbo (Fast Seek)
-              </button>
-              <button
-                onClick={() => setStreamingMode('smart_buffer')}
-                className={`py-1.5 px-2 rounded-lg text-center text-[11px] font-semibold transition-all cursor-pointer ${
-                  streamingMode === 'smart_buffer'
-                    ? 'bg-red-600 text-white font-bold shadow-md shadow-red-600/30'
-                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                }`}
-              >
-                🛡️ Zero-Buffer Cache
-              </button>
-            </div>
-          </div>
-
-          {/* Audio Cleaner Shortcut */}
-          <div className="pt-2 border-t border-zinc-800 flex items-center justify-between">
+          {/* Screen Rotation Action */}
+          <div className="flex items-center justify-between">
             <div>
-              <p className="font-medium text-white">Cam Audio Denoise</p>
-              <p className="text-[10px] text-zinc-400">{audioSettings.enabled ? 'Vocal clarity active' : 'Bypassed'}</p>
+              <p className="font-medium text-white">Rotate Screen</p>
+              <p className="text-[10px] text-zinc-400">Force landscape for mobile</p>
             </div>
             <button
-              onClick={() => {
-                setShowSettingsMenu(false);
-                onOpenAudioCleaner();
-              }}
-              className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white rounded-lg text-[11px] font-semibold cursor-pointer"
+              onClick={toggleScreenRotate}
+              className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${
+                isRotatedLandscape ? 'bg-red-600 text-white' : 'bg-zinc-800 text-zinc-300'
+              }`}
             >
-              Open Studio
+              {isRotatedLandscape ? 'Rotated' : 'Rotate'}
             </button>
           </div>
 
-          {/* Brightness Control */}
-          <div className="space-y-1">
-            <div className="flex justify-between text-[11px]">
-              <span className="text-zinc-400">Display Brightness</span>
+          {/* Engine Mode */}
+          <div className="space-y-1.5 pt-2 border-t border-zinc-800">
+            <span className="text-[10px] font-semibold text-zinc-400 uppercase">Stream Engine</span>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => setStreamingMode('turbo')}
+                className={`py-1 rounded text-center text-[10px] font-semibold transition-all cursor-pointer ${
+                  streamingMode === 'turbo'
+                    ? 'bg-red-600 text-white font-bold'
+                    : 'bg-zinc-800 text-zinc-300'
+                }`}
+              >
+                ⚡ Turbo Seek
+              </button>
+              <button
+                onClick={() => setStreamingMode('smart_buffer')}
+                className={`py-1 rounded text-center text-[10px] font-semibold transition-all cursor-pointer ${
+                  streamingMode === 'smart_buffer'
+                    ? 'bg-red-600 text-white font-bold'
+                    : 'bg-zinc-800 text-zinc-300'
+                }`}
+              >
+                🛡️ Zero-Buffer
+              </button>
+            </div>
+          </div>
+
+          {/* Display Brightness */}
+          <div className="space-y-1 pt-2 border-t border-zinc-800">
+            <div className="flex justify-between text-[10px]">
+              <span className="text-zinc-400">Brightness</span>
               <span className="font-mono text-red-400">{brightness}%</span>
             </div>
             <input
@@ -985,25 +878,6 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
               onChange={(e) => setBrightness(parseInt(e.target.value, 10))}
               className="w-full h-1 bg-zinc-800 accent-red-600 rounded cursor-pointer"
             />
-          </div>
-
-          {/* Storage Cache Manager */}
-          <div className="pt-2 border-t border-zinc-800 flex items-center justify-between">
-            <div>
-              <span className="text-[11px] text-zinc-400">IndexedDB Storage</span>
-              <p className="font-mono text-emerald-400 text-xs">
-                {((cacheStats.cachedBytes || 0) / (1024 * 1024)).toFixed(1)} MB ({cacheStats.percentage}%)
-              </p>
-            </div>
-            <button
-              onClick={() => {
-                setShowSettingsMenu(false);
-                onOpenCacheDrawer();
-              }}
-              className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-white rounded-lg text-[11px] flex items-center gap-1 cursor-pointer"
-            >
-              Manage <ChevronRight className="w-3 h-3" />
-            </button>
           </div>
         </div>
       )}
