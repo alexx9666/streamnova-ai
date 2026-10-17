@@ -612,7 +612,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             ? 'object-fill'
             : 'object-contain'
         }`}
-        crossOrigin={audioSettings.enabled ? 'anonymous' : undefined}
+        crossOrigin="anonymous"
         playsInline
         preload="auto"
         onTimeUpdate={handleTimeUpdate}
@@ -651,12 +651,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onError={() => {
-          // If remux stream encounters error, fallback to proxy-stream
+          // If remux stream encounters error, retry with alternate mirror server to preserve AAC audio
           if (!hasTriedFallback && currentStreamSrc.includes('/api/remux-stream') && rawStreamUrl && !video.isLocal) {
-            console.warn('Remux stream encountered error, attempting proxy stream fallback:', rawStreamUrl);
+            console.warn('Remux stream error, attempting mirror server recovery for AAC audio:', rawStreamUrl);
             setHasTriedFallback(true);
-            setAudioMode('direct');
-            setCurrentStreamSrc(video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`);
+            const alternateServer = video.servers?.find((s) => s.url !== rawStreamUrl)?.url;
+            if (alternateServer) {
+              const remuxAlt = `/api/remux-stream?url=${encodeURIComponent(alternateServer)}&track=${selectedTrack}&t=${Date.now()}`;
+              setCurrentStreamSrc(remuxAlt);
+              setIsLoadingStream(true);
+              return;
+            }
+            // Retry same remux stream once with timestamp cache bypass
+            const retryUrl = `/api/remux-stream?url=${encodeURIComponent(rawStreamUrl)}&track=${selectedTrack}&t=${Date.now()}`;
+            setCurrentStreamSrc(retryUrl);
             setIsLoadingStream(true);
             return;
           }
@@ -1023,29 +1031,52 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             </div>
 
             <div className="space-y-1">
-              <button
-                onClick={() => switchAudioMode('remux', '0')}
-                className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
-                  audioMode === 'remux' && selectedTrack === '0'
-                    ? 'bg-red-600 text-white font-bold'
-                    : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
-                }`}
-              >
-                <span>Track 1: Hindi / Primary (AAC 2.0)</span>
-                {audioMode === 'remux' && selectedTrack === '0' && <Check className="w-3.5 h-3.5" />}
-              </button>
+              {video.audioTracks && video.audioTracks.length > 0 ? (
+                video.audioTracks.map((t, idx) => {
+                  const trackStr = String(t.trackIdx ?? idx);
+                  const isActive = audioMode === 'remux' && selectedTrack === trackStr;
+                  return (
+                    <button
+                      key={t.id || idx}
+                      onClick={() => switchAudioMode('remux', trackStr)}
+                      className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
+                        isActive
+                          ? 'bg-red-600 text-white font-bold shadow-md shadow-red-600/30'
+                          : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                      }`}
+                    >
+                      <span>Track {idx + 1}: {t.name} (AAC 2.0)</span>
+                      {isActive && <Check className="w-3.5 h-3.5" />}
+                    </button>
+                  );
+                })
+              ) : (
+                <>
+                  <button
+                    onClick={() => switchAudioMode('remux', '0')}
+                    className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
+                      audioMode === 'remux' && selectedTrack === '0'
+                        ? 'bg-red-600 text-white font-bold'
+                        : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                    }`}
+                  >
+                    <span>Track 1: Hindi / Primary (AAC 2.0)</span>
+                    {audioMode === 'remux' && selectedTrack === '0' && <Check className="w-3.5 h-3.5" />}
+                  </button>
 
-              <button
-                onClick={() => switchAudioMode('remux', '1')}
-                className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
-                  audioMode === 'remux' && selectedTrack === '1'
-                    ? 'bg-red-600 text-white font-bold'
-                    : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
-                }`}
-              >
-                <span>Track 2: English / Secondary (AAC 2.0)</span>
-                {audioMode === 'remux' && selectedTrack === '1' && <Check className="w-3.5 h-3.5" />}
-              </button>
+                  <button
+                    onClick={() => switchAudioMode('remux', '1')}
+                    className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
+                      audioMode === 'remux' && selectedTrack === '1'
+                        ? 'bg-red-600 text-white font-bold'
+                        : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                    }`}
+                  >
+                    <span>Track 2: English / Secondary (AAC 2.0)</span>
+                    {audioMode === 'remux' && selectedTrack === '1' && <Check className="w-3.5 h-3.5" />}
+                  </button>
+                </>
+              )}
 
               <button
                 onClick={() => switchAudioMode('direct')}

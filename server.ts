@@ -191,7 +191,7 @@ app.head('/api/proxy-stream', handleProxyStream);
  * 4. Precise seeking via `?ss=<seconds>`.
  * 5. Audio track switching via `?track=0` (Hindi) or `?track=1` (English).
  */
-const handleRemuxStream = (req: Request, res: Response) => {
+const handleRemuxStream = async (req: Request, res: Response) => {
   const targetUrl = req.query.url as string;
   if (!targetUrl) {
     return res.status(400).send('Missing "url" parameter');
@@ -201,6 +201,9 @@ const handleRemuxStream = (req: Request, res: Response) => {
   res.setHeader('Accept-Ranges', 'none');
   res.setHeader('Content-Disposition', 'inline');
   res.setHeader('Cache-Control', 'no-cache, no-store');
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
 
   if (req.method === 'HEAD') {
     return res.status(200).end();
@@ -208,62 +211,79 @@ const handleRemuxStream = (req: Request, res: Response) => {
 
   const ss = (req.query.ss as string) || '0';
   const track = (req.query.track as string) || '0';
+  const seekSec = parseFloat(ss);
+  const isSeeking = !isNaN(seekSec) && seekSec > 0;
+
+  // Track mapping: 0 = Hindi, 1 = Tamil/English, 2 = Telugu, 3 = Kannada
+  let trackIdx = '0';
+  if (track === '1' || track === 'tam' || track === 'eng') trackIdx = '1';
+  else if (track === '2' || track === 'tel') trackIdx = '2';
+  else if (track === '3' || track === 'kan') trackIdx = '3';
+  else if (!isNaN(parseInt(track))) trackIdx = String(parseInt(track));
+
+  const ffmpegBin = (typeof ffmpegStatic === 'string' && ffmpegStatic) ? ffmpegStatic : 'ffmpeg';
 
   const args: string[] = [
     '-hide_banner',
-    '-loglevel', 'error',
-    '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\r\n',
-    '-reconnect', '1',
-    '-reconnect_at_eof', '1',
-    '-reconnect_streamed', '1',
-    '-reconnect_delay_max', '5',
+    '-loglevel', 'warning',
+    '-analyzeduration', '2000000',
+    '-probesize', '2000000',
   ];
 
-  const seekSec = parseFloat(ss);
-  if (!isNaN(seekSec) && seekSec > 0) {
-    args.push('-ss', seekSec.toFixed(2));
+  const abortController = new AbortController();
+
+  if (!isSeeking) {
+    args.push('-i', 'pipe:0');
+  } else {
+    args.push(
+      '-ss', seekSec.toFixed(2),
+      '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\r\n',
+      '-reconnect', '1',
+      '-reconnect_at_eof', '1',
+      '-reconnect_streamed', '1',
+      '-reconnect_delay_max', '3',
+      '-i', targetUrl
+    );
   }
 
-  args.push('-i', targetUrl);
   // Map primary video track
   args.push('-map', '0:v:0');
+  // Map selected audio track (transcoding to universal AAC)
+  args.push('-map', `0:a:${trackIdx}?`);
 
-  // Select audio track:
-  // Track 0 (Hindi / Primary), Track 1 (English), Track 2 (Tamil), Track 3 (Telugu)
-  if (track === '1' || track === 'eng') {
-    args.push('-map', '0:a:1?');
-  } else if (track === '2' || track === 'tam' || track === 'tel') {
-    args.push('-map', '0:a:2?');
-  } else if (track === '3' || track === 'kan') {
-    args.push('-map', '0:a:3?');
-  } else {
-    args.push('-map', '0:a:0?');
-  }
-
-  // Fast direct stream copy for video (0% CPU, 0 latency)
+  // Fast direct stream copy for H.264 video (0% CPU load)
   args.push('-c:v', 'copy');
-  // Transcode audio to Universal Stereo AAC (Supported on 100% of iOS, Android, Chrome, Safari)
+  // Transcode AC-3 / DTS / 5.1 audio to Universal Stereo AAC (Supported on 100% of browsers)
   args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2');
   // Fragmented MP4 for immediate real-time browser playback
-  args.push('-movflags', 'frag_keyframe+empty_moov+default_base_moof');
-  args.push('-frag_duration', '500000');
+  args.push('-movflags', '+frag_keyframe+empty_moov+default_base_moof');
+  args.push('-flush_packets', '1');
   args.push('-f', 'mp4');
   args.push('pipe:1');
 
-  const ffmpegBin = (typeof ffmpegStatic === 'string' && ffmpegStatic) ? ffmpegStatic : 'ffmpeg';
+  // Flush HTTP headers immediately so browser receives 200 OK and starts playback
+  res.flushHeaders();
+
   const ffmpegProcess = spawn(ffmpegBin, args, {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [isSeeking ? 'ignore' : 'pipe', 'pipe', 'pipe'],
   });
 
-  let ffmpegStderr = '';
+  let clientClosed = false;
+  req.on('close', () => {
+    clientClosed = true;
+    abortController.abort();
+    setTimeout(() => {
+      try { ffmpegProcess.kill(); } catch {}
+    }, 1000);
+  });
+
+  ffmpegProcess.stdout?.pipe(res);
+
+  let stderrOutput = '';
   ffmpegProcess.stderr?.on('data', (d) => {
-    ffmpegStderr += d.toString();
-    if (ffmpegStderr.length > 2000) {
-      ffmpegStderr = ffmpegStderr.slice(-2000);
-    }
+    stderrOutput += d.toString();
+    if (stderrOutput.length > 1000) stderrOutput = stderrOutput.slice(-1000);
   });
-
-  ffmpegProcess.stdout.pipe(res);
 
   ffmpegProcess.on('error', (err) => {
     console.error('ffmpeg process error:', err);
@@ -273,18 +293,55 @@ const handleRemuxStream = (req: Request, res: Response) => {
   });
 
   ffmpegProcess.on('close', (code) => {
-    if (code !== 0 && code !== null) {
-      console.warn(`ffmpeg process exited with code ${code}:`, ffmpegStderr.slice(-300));
+    if (code !== 0 && code !== null && !clientClosed) {
+      console.warn(`ffmpeg exited with code ${code}:`, stderrOutput.slice(-200));
     }
   });
 
-  req.on('close', () => {
+  // Stream upstream body to ffmpeg stdin if not seeking (High-throughput Node.js fetch pipeline)
+  if (!isSeeking && ffmpegProcess.stdin) {
     try {
-      ffmpegProcess.kill('SIGKILL');
-    } catch (e) {
-      // ignore
+      const upstreamRes = await fetch(targetUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+        },
+        signal: abortController.signal,
+      });
+
+      if (!upstreamRes.ok && upstreamRes.status !== 206) {
+        console.warn('Upstream returned non-200 for remux:', upstreamRes.status);
+        try { ffmpegProcess.kill(); } catch {}
+        return;
+      }
+
+      if (upstreamRes.body) {
+        const reader = upstreamRes.body.getReader();
+        while (!clientClosed) {
+          const { done, value } = await reader.read();
+          if (done) {
+            ffmpegProcess.stdin.end();
+            break;
+          }
+          if (ffmpegProcess.killed || !ffmpegProcess.stdin.writable) {
+            reader.cancel().catch(() => {});
+            break;
+          }
+          const canWrite = ffmpegProcess.stdin.write(Buffer.from(value));
+          if (!canWrite) {
+            await new Promise<void>((resolve) => ffmpegProcess.stdin?.once('drain', resolve));
+          }
+        }
+      } else {
+        ffmpegProcess.stdin.end();
+      }
+    } catch (streamErr: any) {
+      if (!abortController.signal.aborted) {
+        console.warn('Upstream streaming to ffmpeg error:', streamErr.message);
+      }
+      try { ffmpegProcess.kill(); } catch {}
     }
-  });
+  }
 };
 
 app.get('/api/remux-stream', handleRemuxStream);
