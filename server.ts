@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import { spawn } from 'child_process';
 import dotenv from 'dotenv';
+import ffmpegStatic from 'ffmpeg-static';
 
 dotenv.config();
 
@@ -168,7 +169,7 @@ app.get('/api/remux-stream', (req: Request, res: Response) => {
   }
 
   const ss = (req.query.ss as string) || '0';
-  const track = (req.query.track as string) || 'hin';
+  const track = (req.query.track as string) || '0';
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Accept-Ranges', 'none');
@@ -187,25 +188,32 @@ app.get('/api/remux-stream', (req: Request, res: Response) => {
   }
 
   args.push('-i', targetUrl);
+  // Map primary video track
   args.push('-map', '0:v:0');
 
-  // Select audio track
-  if (track === 'eng' || track === '1') {
+  // Select audio track:
+  // Track 0 (Hindi / Primary), Track 1 (English), Track 2 (Tamil), Track 3 (Telugu)
+  if (track === '1' || track === 'eng') {
     args.push('-map', '0:a:1?');
+  } else if (track === '2' || track === 'tam' || track === 'tel') {
+    args.push('-map', '0:a:2?');
+  } else if (track === '3' || track === 'kan') {
+    args.push('-map', '0:a:3?');
   } else {
     args.push('-map', '0:a:0?');
   }
 
-  // Fast direct stream copy for video
+  // Fast direct stream copy for video (0% CPU, 0 latency)
   args.push('-c:v', 'copy');
-  // Transcode audio to universal Stereo AAC: 100% device compatibility
-  args.push('-c:a', 'aac', '-b:a', '160k', '-ac', '2');
-  // Fragmented MP4 for immediate browser playback
+  // Transcode audio to Universal Stereo AAC (Supported on 100% of iOS, Android, Chrome, Safari)
+  args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2');
+  // Fragmented MP4 for immediate real-time browser playback
   args.push('-movflags', 'frag_keyframe+empty_moov+default_base_moof');
   args.push('-f', 'mp4');
   args.push('pipe:1');
 
-  const ffmpegProcess = spawn('ffmpeg', args, {
+  const ffmpegBin = (typeof ffmpegStatic === 'string' && ffmpegStatic) ? ffmpegStatic : 'ffmpeg';
+  const ffmpegProcess = spawn(ffmpegBin, args, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 

@@ -2,7 +2,7 @@ import React, { useRef, useState, useEffect, useCallback } from 'react';
 import {
   Play, Pause, RotateCcw, RotateCw, Volume2, VolumeX, Maximize2, Minimize2,
   Settings, Sparkles, CheckCircle2, ChevronRight, Sun, Check, HardDrive,
-  Sliders, Wifi, ArrowLeft, ShieldCheck, Zap, Smartphone
+  Sliders, Wifi, ArrowLeft, ShieldCheck, Zap, Smartphone, ArrowRight
 } from 'lucide-react';
 import { VideoSource, CacheStats } from '../types';
 import { videoCacheEngine } from '../services/videoCacheEngine';
@@ -83,12 +83,56 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
   // Stream URL controller with automatic fallback to direct URL
   const rawStreamUrl = video.url;
+  const isLikelyMkv = !!(
+    video.isMkv ||
+    video.url.toLowerCase().includes('.mkv') ||
+    video.title.toLowerCase().includes('.mkv') ||
+    video.url.includes('hubcloud') ||
+    video.url.includes('cloudflarestorage')
+  );
+
+  const [audioMode, setAudioMode] = useState<'direct' | 'remux'>(isLikelyMkv ? 'remux' : 'direct');
+  const [selectedTrack, setSelectedTrack] = useState<string>('0');
+  const [isEmbedActive, setIsEmbedActive] = useState<boolean>(false);
+
   const initialStreamUrl = video.isLocal && video.file
     ? URL.createObjectURL(video.file)
-    : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`);
+    : (isLikelyMkv
+        ? `/api/remux-stream?url=${encodeURIComponent(rawStreamUrl)}&track=0`
+        : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`));
 
   const [currentStreamSrc, setCurrentStreamSrc] = useState<string>(initialStreamUrl);
   const [hasTriedFallback, setHasTriedFallback] = useState<boolean>(false);
+
+  // Switch between Universal AAC Transcoder and Direct Range Stream
+  const switchAudioMode = (mode: 'direct' | 'remux', track: string = selectedTrack) => {
+    setAudioMode(mode);
+    setSelectedTrack(track);
+    setIsLoadingStream(true);
+    setVideoError(null);
+
+    const seekPos = currentTime > 2 ? currentTime.toFixed(1) : '0';
+
+    if (mode === 'remux') {
+      const remuxUrl = `/api/remux-stream?url=${encodeURIComponent(rawStreamUrl)}&track=${track}&ss=${seekPos}&t=${Date.now()}`;
+      setCurrentStreamSrc(remuxUrl);
+    } else {
+      const directUrl = video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`;
+      setCurrentStreamSrc(directUrl);
+    }
+
+    setTimeout(() => {
+      if (videoRef.current) {
+        videoRef.current.load();
+        videoRef.current.play().then(() => {
+          setIsPlaying(true);
+          setIsLoadingStream(false);
+        }).catch(() => {
+          setIsLoadingStream(false);
+        });
+      }
+    }, 150);
+  };
 
   // Subscribe to Audio Enhancer Engine changes
   useEffect(() => {
@@ -104,9 +148,24 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
   // Reset states when video changes
   useEffect(() => {
+    const isMkvStream = !!(
+      video.isMkv ||
+      video.url.toLowerCase().includes('.mkv') ||
+      video.title.toLowerCase().includes('.mkv') ||
+      video.url.includes('hubcloud') ||
+      video.url.includes('cloudflarestorage')
+    );
+    const defaultMode = isMkvStream ? 'remux' : 'direct';
+    setAudioMode(defaultMode);
+    setSelectedTrack('0');
+    setIsEmbedActive(false);
+
     const nextUrl = video.isLocal && video.file
       ? URL.createObjectURL(video.file)
-      : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(video.url)}`);
+      : (isMkvStream
+          ? `/api/remux-stream?url=${encodeURIComponent(video.url)}&track=0`
+          : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(video.url)}`));
+
     setCurrentStreamSrc(nextUrl);
     setHasTriedFallback(false);
     setIsPlaying(false);
@@ -225,8 +284,22 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     setCurrentTime(safeTarget);
     setScrubTime(safeTarget);
 
-    // Direct browser seek via HTTP 206 Partial Content Range
-    videoRef.current.currentTime = safeTarget;
+    if (audioMode === 'remux') {
+      const remuxUrl = `/api/remux-stream?url=${encodeURIComponent(rawStreamUrl)}&track=${selectedTrack}&ss=${safeTarget.toFixed(1)}&t=${Date.now()}`;
+      setCurrentStreamSrc(remuxUrl);
+      if (videoRef.current) {
+        videoRef.current.load();
+        videoRef.current.play().then(() => {
+          setIsPlaying(true);
+          setIsSeeking(false);
+        }).catch(() => {
+          setIsSeeking(false);
+        });
+      }
+    } else {
+      // Direct browser seek via HTTP 206 Partial Content Range
+      videoRef.current.currentTime = safeTarget;
+    }
 
     // Reprioritize background chunk cache ahead of the new position if enabled
     if (streamingMode === 'smart_buffer' && duration > 0) {
@@ -504,6 +577,30 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
       onClick={() => setControlsVisible((v) => !v)}
       style={{ filter: `brightness(${brightness}%)` }}
     >
+      {/* HubCloud Multi-Audio Embed Player Overlay */}
+      {isEmbedActive && video.embedUrl && (
+        <div className="absolute inset-0 z-30 bg-black flex flex-col">
+          <div className="absolute top-3 right-3 z-40">
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setIsEmbedActive(false);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-zinc-900/95 hover:bg-zinc-800 text-xs font-bold text-white border border-zinc-700 flex items-center gap-1.5 shadow-2xl cursor-pointer"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-red-500" />
+              <span>Native Player</span>
+            </button>
+          </div>
+          <iframe
+            src={video.embedUrl}
+            className="w-full h-full border-0"
+            allowFullScreen
+            allow="autoplay; encrypted-media; picture-in-picture"
+          />
+        </div>
+      )}
+
       {/* Native Range-Stream Video Element (Unrestricted native audio) */}
       <video
         ref={videoRef}
@@ -642,6 +739,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
           {/* Top Right Action Pills */}
           <div className="flex items-center gap-1.5 sm:gap-2">
+            {/* Fix Audio (Universal AAC Transcoder for AC3/EAC3/MKV) */}
+            <button
+              onClick={() => switchAudioMode(audioMode === 'remux' ? 'direct' : 'remux')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold transition-all cursor-pointer border ${
+                audioMode === 'remux'
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-md shadow-emerald-600/30'
+                  : 'bg-zinc-900/90 text-amber-300 border-amber-500/60 hover:bg-zinc-800'
+              }`}
+              title="Fix Silent Audio (Transcodes AC3/EAC3 to Universal Stereo AAC)"
+            >
+              <Volume2 className="w-3 h-3 text-amber-400" />
+              <span>{audioMode === 'remux' ? 'Audio: AAC (Full Sound)' : 'Fix Audio'}</span>
+            </button>
+
             {/* Audio Cleaner Button */}
             <button
               onClick={onOpenAudioCleaner}
@@ -887,6 +998,69 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
               >
                 🛡️ Zero-Buffer
               </button>
+            </div>
+          </div>
+
+          {/* Audio Tracks & AC3/EAC3 Sound Fix */}
+          <div className="space-y-1.5 pt-2 border-t border-zinc-800">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-semibold text-zinc-400 uppercase">Audio Track & Codec</span>
+              {audioMode === 'remux' && (
+                <span className="text-[9px] font-bold text-emerald-400 bg-emerald-950/70 border border-emerald-800/60 px-1 rounded">
+                  Stereo AAC Active
+                </span>
+              )}
+            </div>
+
+            <div className="space-y-1">
+              <button
+                onClick={() => switchAudioMode('remux', '0')}
+                className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
+                  audioMode === 'remux' && selectedTrack === '0'
+                    ? 'bg-red-600 text-white font-bold'
+                    : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                }`}
+              >
+                <span>Track 1: Hindi / Primary (AAC 2.0)</span>
+                {audioMode === 'remux' && selectedTrack === '0' && <Check className="w-3.5 h-3.5" />}
+              </button>
+
+              <button
+                onClick={() => switchAudioMode('remux', '1')}
+                className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
+                  audioMode === 'remux' && selectedTrack === '1'
+                    ? 'bg-red-600 text-white font-bold'
+                    : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-300'
+                }`}
+              >
+                <span>Track 2: English / Secondary (AAC 2.0)</span>
+                {audioMode === 'remux' && selectedTrack === '1' && <Check className="w-3.5 h-3.5" />}
+              </button>
+
+              <button
+                onClick={() => switchAudioMode('direct')}
+                className={`w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium transition-all flex items-center justify-between cursor-pointer ${
+                  audioMode === 'direct'
+                    ? 'bg-zinc-700 text-white font-bold'
+                    : 'bg-zinc-900 hover:bg-zinc-800 text-zinc-400'
+                }`}
+              >
+                <span>Direct Passthrough (Original Stream)</span>
+                {audioMode === 'direct' && <Check className="w-3.5 h-3.5" />}
+              </button>
+
+              {video.embedUrl && (
+                <button
+                  onClick={() => {
+                    setIsEmbedActive(true);
+                    setShowSettingsMenu(false);
+                  }}
+                  className="w-full py-1.5 px-2 rounded-lg text-left text-[11px] font-medium bg-emerald-950/40 hover:bg-emerald-900/50 text-emerald-300 border border-emerald-800/60 transition-all flex items-center justify-between cursor-pointer mt-1"
+                >
+                  <span>Launch HubCloud Multi-Audio Player</span>
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              )}
             </div>
           </div>
 
