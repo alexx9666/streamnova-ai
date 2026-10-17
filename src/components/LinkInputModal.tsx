@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Link as LinkIcon, Upload, Film, CheckCircle2, AlertCircle, Loader2,
-  ExternalLink, Sparkles, ArrowRight, Play, ShieldCheck, Zap
+  ArrowRight, Play, ShieldCheck, Zap
 } from 'lucide-react';
 import { VideoSource } from '../types';
 import { SAMPLE_VIDEOS } from '../data/sampleVideos';
@@ -24,6 +24,32 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   if (!isOpen) return null;
+
+  const handlePlaySubmit = async (overrideUrl?: string) => {
+    const target = (overrideUrl || urlInput).trim();
+    if (!target) return;
+
+    // Check if target needs deep resolving (e.g. HubCloud landing page)
+    if (target.includes('hubcloud') || target.includes('gamerxyt')) {
+      setIsResolving(true);
+      setErrorMsg(null);
+      try {
+        const res = await fetch(`/api/resolve-link?url=${encodeURIComponent(target)}`);
+        const data = await res.json();
+        if (res.ok && data?.finalUrl) {
+          handleApplyResolved(data.finalUrl, data.title, data.sizeBytes, data.servers);
+          return;
+        }
+      } catch (err) {
+        // Fallback to direct stream below
+      } finally {
+        setIsResolving(false);
+      }
+    }
+
+    // Direct playback for MP4, MKV, WebM, or any video stream URL
+    handlePlayDirect(target);
+  };
 
   const handleResolveUrl = async (urlToTest?: string) => {
     const target = (urlToTest || urlInput).trim();
@@ -50,23 +76,50 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
   };
 
   const handleApplyResolved = (streamUrl: string, title?: string, sizeBytes?: number, servers?: any[]) => {
+    const isMkv = !!(
+      streamUrl.toLowerCase().includes('.mkv') ||
+      (title && title.toLowerCase().includes('.mkv')) ||
+      (resolveResult?.title && resolveResult.title.toLowerCase().includes('.mkv')) ||
+      resolveResult?.isMkv
+    );
+
     const streamProxyUrl = `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
 
     const videoSource: VideoSource = {
       id: `stream_${Date.now()}`,
-      title: title || resolveResult?.title || 'Streamed Video',
+      title: title || resolveResult?.title || 'Custom Video Stream',
       url: streamUrl,
       proxyUrl: streamProxyUrl,
-      sizeBytes: sizeBytes || (resolveResult?.sizeBytes || 60 * 1024 * 1024),
+      sizeBytes: sizeBytes || resolveResult?.sizeBytes || 80 * 1024 * 1024,
       duration: resolveResult?.duration || 0,
       isMkv,
       remuxUrl: resolveResult?.remuxUrl,
       audioTracks: resolveResult?.audioTracks,
       description: resolveResult?.isHubCloudResolved
         ? 'High-speed stream with zero-buffer background cache and audio clarity engine'
-        : 'Streamed with background chunk buffering & zero-latency seeking',
+        : 'Direct Range Stream with Zero-Buffer Engine',
       servers: servers || resolveResult?.servers,
       embedUrl: resolveResult?.embedUrl,
+    };
+
+    onSelectVideo(videoSource);
+    onClose();
+  };
+
+  const handlePlayDirect = (rawUrl: string) => {
+    const cleanUrl = rawUrl.trim();
+    if (!cleanUrl) return;
+
+    const isMkv = cleanUrl.toLowerCase().includes('.mkv');
+    const videoSource: VideoSource = {
+      id: `stream_${Date.now()}`,
+      title: cleanUrl.split('/').pop()?.split('?')[0] || 'Direct Video Stream',
+      url: cleanUrl,
+      proxyUrl: `/api/proxy-stream?url=${encodeURIComponent(cleanUrl)}`,
+      sizeBytes: 80 * 1024 * 1024,
+      duration: 0,
+      isMkv,
+      description: 'Direct Range Stream with Zero-Buffer Engine',
     };
 
     onSelectVideo(videoSource);
@@ -94,17 +147,17 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200 font-sans">
-      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col">
+    <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200 font-sans">
+      <div className="bg-zinc-950 border border-zinc-800 rounded-2xl w-full max-w-xl max-h-[90vh] overflow-hidden shadow-2xl flex flex-col">
         {/* Header */}
-        <div className="p-4 md:p-5 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center justify-between">
+        <div className="p-4 border-b border-zinc-800/80 bg-zinc-900/50 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-red-600/20 border border-red-600/30 flex items-center justify-center text-red-500 shadow-lg shadow-red-600/20">
-              <LinkIcon className="w-5 h-5" />
+            <div className="w-9 h-9 rounded-xl bg-red-600/20 border border-red-600/30 flex items-center justify-center text-red-500 shadow-md shadow-red-600/20">
+              <LinkIcon className="w-4 h-4" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-white tracking-wide">Play Any Video Link</h2>
-              <p className="text-xs text-zinc-400">HubCloud, Direct MP4/MKV, Google Drive, or Cloudflare R2 links</p>
+              <h2 className="text-sm sm:text-base font-bold text-white tracking-wide">Play Any Video URL</h2>
+              <p className="text-xs text-zinc-400">HubCloud, Direct MP4/MKV, or cloud stream links</p>
             </div>
           </div>
           <button
@@ -119,7 +172,7 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
         <div className="flex border-b border-zinc-800 bg-zinc-950 px-4 pt-2 gap-2 text-xs font-medium">
           <button
             onClick={() => setActiveTab('url')}
-            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+            className={`pb-2 px-3 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'url'
                 ? 'border-red-600 text-white font-bold'
                 : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -130,18 +183,18 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
           </button>
           <button
             onClick={() => setActiveTab('samples')}
-            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+            className={`pb-2 px-3 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'samples'
                 ? 'border-red-600 text-white font-bold'
                 : 'border-transparent text-zinc-400 hover:text-zinc-200'
             }`}
           >
             <Film className="w-3.5 h-3.5" />
-            Popular Showcase
+            Sample Movies
           </button>
           <button
             onClick={() => setActiveTab('local')}
-            className={`pb-2.5 px-3 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
+            className={`pb-2 px-3 border-b-2 transition-colors flex items-center gap-1.5 cursor-pointer ${
               activeTab === 'local'
                 ? 'border-red-600 text-white font-bold'
                 : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -153,63 +206,85 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
         </div>
 
         {/* Content Body */}
-        <div className="p-5 overflow-y-auto custom-scrollbar space-y-4 flex-1">
+        <div className="p-4 sm:p-5 overflow-y-auto custom-scrollbar space-y-4 flex-1">
           {activeTab === 'url' && (
             <div className="space-y-4">
               <div>
                 <label className="text-xs font-semibold text-zinc-300 block mb-2">
-                  Paste Video Stream or HubCloud Link
+                  Paste Video Stream Link
                 </label>
-                <div className="flex gap-2">
+                <div className="space-y-2">
                   <input
                     type="url"
-                    placeholder="https://hubcloud.ist/drive/... or https://example.com/movie.mp4"
+                    placeholder="Paste link: https://... or HubCloud drive URL"
                     value={urlInput}
                     onChange={(e) => setUrlInput(e.target.value)}
-                    onKeyDown={(e) => e.key === 'Enter' && handleResolveUrl()}
-                    className="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none focus:border-red-500"
+                    onKeyDown={(e) => e.key === 'Enter' && handlePlaySubmit()}
+                    className="w-full bg-zinc-900 border border-zinc-700 focus:border-red-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-zinc-500 focus:outline-none font-mono"
                   />
-                  <button
-                    onClick={() => handleResolveUrl()}
-                    disabled={isResolving || !urlInput.trim()}
-                    className="px-5 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-all shadow-lg shadow-red-600/25 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    {isResolving ? (
-                      <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Resolving...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>Connect</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </>
-                    )}
-                  </button>
+
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handlePlaySubmit()}
+                      disabled={isResolving || !urlInput.trim()}
+                      className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl transition-all shadow-md shadow-red-600/30 flex items-center justify-center gap-2 cursor-pointer"
+                    >
+                      {isResolving ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Connecting Video...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>Play Video Now</span>
+                        </>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => handleResolveUrl()}
+                      disabled={isResolving || !urlInput.trim()}
+                      className="px-3.5 py-2.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 hover:text-white font-medium text-xs rounded-xl border border-zinc-700 flex items-center gap-1.5 cursor-pointer"
+                      title="Inspect stream details and server mirrors"
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" />
+                      <span>Inspect</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* Error Message */}
+              {/* Error Message with Play Anyway option */}
               {errorMsg && (
-                <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-xl text-xs text-red-300 flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-semibold">Could not stream directly</p>
-                    <p className="text-[11px] text-red-300/80 mt-0.5">{errorMsg}</p>
+                <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-xl text-xs text-red-300 space-y-2">
+                  <div className="flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold">Inspection notice</p>
+                      <p className="text-[11px] text-red-300/80 mt-0.5">{errorMsg}</p>
+                    </div>
                   </div>
+                  <button
+                    onClick={() => handlePlayDirect(urlInput)}
+                    className="w-full py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Play className="w-3 h-3 fill-current" />
+                    <span>Play Anyway (Direct Stream Proxy)</span>
+                  </button>
                 </div>
               )}
 
               {/* Resolved Card */}
               {resolveResult && (
-                <div className="p-4 bg-zinc-900/80 border border-zinc-700/80 rounded-xl space-y-3">
+                <div className="p-3.5 bg-zinc-900/90 border border-zinc-700/80 rounded-xl space-y-2.5">
                   <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold">
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>Stream Successfully Connected!</span>
+                    <span>Stream Connected Successfully!</span>
                   </div>
 
-                  <div className="text-xs text-zinc-300 space-y-1">
-                    <p className="font-bold text-white text-sm">
+                  <div className="text-xs text-zinc-300 space-y-0.5">
+                    <p className="font-bold text-white text-sm line-clamp-1">
                       {resolveResult.title || 'Direct Video Stream'}
                     </p>
                     {resolveResult.sizeBytes && (
@@ -221,47 +296,18 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
 
                   <button
                     onClick={() => handleApplyResolved(resolveResult.finalUrl, resolveResult.title, resolveResult.sizeBytes, resolveResult.servers)}
-                    className="w-full py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all shadow-lg shadow-red-600/30 flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all shadow-md shadow-red-600/30 flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>Play Now with Zero-Buffer Engine</span>
+                    <span>Play Now with Zero-Buffer</span>
                   </button>
                 </div>
               )}
-
-              {/* Quick Preset Links */}
-              <div className="pt-2">
-                <span className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider block mb-2">
-                  Try Fast Demo Streams:
-                </span>
-                <div className="space-y-1.5">
-                  <button
-                    onClick={() => {
-                      setUrlInput('https://hubcloud.ist/drive/1duaqkwcs3qjtft');
-                      handleResolveUrl('https://hubcloud.ist/drive/1duaqkwcs3qjtft');
-                    }}
-                    className="w-full text-left p-2.5 rounded-lg bg-zinc-900/60 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 flex items-center justify-between cursor-pointer group"
-                  >
-                    <span className="group-hover:text-white font-medium">Masterplan (2026) • HubCloud Cloudflare R2</span>
-                    <span className="text-[10px] text-red-400 font-bold">Connect ➔</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setUrlInput('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4');
-                      handleResolveUrl('https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4');
-                    }}
-                    className="w-full text-left p-2.5 rounded-lg bg-zinc-900/60 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 flex items-center justify-between cursor-pointer group"
-                  >
-                    <span className="group-hover:text-white font-medium">Tears of Steel (Sci-Fi Dialogue Action)</span>
-                    <span className="text-[10px] text-red-400 font-bold">Connect ➔</span>
-                  </button>
-                </div>
-              </div>
             </div>
           )}
 
           {activeTab === 'samples' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
               {SAMPLE_VIDEOS.map((sample) => (
                 <div
                   key={sample.id}
@@ -279,9 +325,9 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
                       {sample.description}
                     </p>
                   </div>
-                  <div className="flex items-center justify-between mt-3 pt-2 border-t border-zinc-800/60 text-[10px] text-zinc-500">
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-800/60 text-[10px] text-zinc-500">
                     <span>{sample.duration ? `${Math.floor(sample.duration / 60)} mins` : 'HD Stream'}</span>
-                    <span className="text-red-500 font-bold flex items-center gap-1 group-hover:translate-x-0.5 transition-transform">
+                    <span className="text-red-500 font-bold flex items-center gap-1">
                       Play <Play className="w-2.5 h-2.5 fill-current" />
                     </span>
                   </div>
@@ -298,22 +344,22 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
                 onChange={handleFileSelect}
                 className="absolute inset-0 opacity-0 cursor-pointer"
               />
-              <Upload className="w-10 h-10 text-red-500 mb-3" />
-              <p className="text-sm font-bold text-white">Choose a video from this device</p>
-              <p className="text-xs text-zinc-400 mt-1">MP4, WebM, MKV, MOV supported</p>
+              <Upload className="w-8 h-8 text-red-500 mb-2" />
+              <p className="text-xs sm:text-sm font-bold text-white">Choose a video from this device</p>
+              <p className="text-[11px] text-zinc-400 mt-0.5">MP4, WebM, MKV, MOV supported</p>
             </div>
           )}
         </div>
 
         {/* Footer */}
-        <div className="p-3.5 border-t border-zinc-800 bg-zinc-900/40 flex items-center justify-between text-[11px] text-zinc-400">
+        <div className="p-3 border-t border-zinc-800 bg-zinc-900/40 flex items-center justify-between text-[11px] text-zinc-400">
           <span className="flex items-center gap-1">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            HTTP 206 Partial Content Proxy & Audio DSP ready
+            HTTP 206 Direct Range Seek
           </span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white font-medium text-xs transition-colors"
+            className="px-3 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-white font-medium text-xs transition-colors cursor-pointer"
           >
             Close
           </button>

@@ -87,15 +87,24 @@ export const AudioCleanerModal: React.FC<AudioCleanerModalProps> = ({ isOpen, on
   if (!isOpen) return null;
 
   const handlePresetSelect = (preset: AudioPreset) => {
+    audioEnhancerEngine.resumeContext();
+    const video = document.querySelector('video');
+    if (video) audioEnhancerEngine.attachToElement(video);
     audioEnhancerEngine.setPreset(preset);
+    setSettings(audioEnhancerEngine.getSettings());
   };
 
   const handleToggle = () => {
+    audioEnhancerEngine.resumeContext();
+    const video = document.querySelector('video');
+    if (video) audioEnhancerEngine.attachToElement(video);
     audioEnhancerEngine.toggle();
+    setSettings(audioEnhancerEngine.getSettings());
   };
 
   const handleUpdate = (partial: Partial<AudioEnhancerSettings>) => {
     audioEnhancerEngine.applySettings(partial);
+    setSettings(audioEnhancerEngine.getSettings());
   };
 
   const presetsList: { id: AudioPreset; name: string; desc: string; icon: any; badge?: string }[] = [

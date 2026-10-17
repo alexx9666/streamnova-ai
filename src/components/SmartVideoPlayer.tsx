@@ -102,6 +102,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
   // Reset states when video changes
   useEffect(() => {
+    setIsPlaying(false);
     setVideoError(null);
     setIsLoadingStream(true);
     setIsSeeking(false);
@@ -110,6 +111,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     setScrubTime(0);
     if (video.duration) {
       setDuration(video.duration);
+    }
+    // Auto-load and attempt autoplay for newly inserted streams
+    if (videoRef.current) {
+      videoRef.current.load();
+      videoRef.current.play().then(() => {
+        setIsPlaying(true);
+        setIsLoadingStream(false);
+        if (audioSettings.enabled && videoRef.current) {
+          audioEnhancerEngine.attachToElement(videoRef.current);
+          audioEnhancerEngine.resumeContext();
+        }
+      }).catch(() => {
+        setIsLoadingStream(false);
+      });
     }
   }, [video.id, video.url]);
 
@@ -191,6 +206,10 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
       videoRef.current.pause();
       setIsPlaying(false);
     } else {
+      if (audioSettings.enabled) {
+        audioEnhancerEngine.attachToElement(videoRef.current);
+        audioEnhancerEngine.resumeContext();
+      }
       videoRef.current.play().then(() => {
         setIsPlaying(true);
         setIsLoadingStream(false);
@@ -499,6 +518,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             ? 'object-fill'
             : 'object-contain'
         }`}
+        crossOrigin="anonymous"
         playsInline
         preload="auto"
         onTimeUpdate={handleTimeUpdate}

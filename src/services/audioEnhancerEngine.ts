@@ -138,8 +138,8 @@ class AudioEnhancerEngine {
       }
 
       this.buildDspGraph();
-      this.applySettings(this.settings);
       this.isConnected = true;
+      this.updateDspNodes();
       return true;
     } catch (err) {
       console.warn('AudioEnhancerEngine attach error (falling back to native audio):', err);
@@ -209,9 +209,7 @@ class AudioEnhancerEngine {
     this.analyser.connect(this.audioCtx.destination);
   }
 
-  public applySettings(newSettings: Partial<AudioEnhancerSettings>): void {
-    this.settings = { ...this.settings, ...newSettings };
-
+  private updateDspNodes(): void {
     if (!this.audioCtx) return;
     if (this.audioCtx.state === 'suspended') {
       this.audioCtx.resume().catch(() => {});
@@ -264,7 +262,21 @@ class AudioEnhancerEngine {
         this.gainNode.gain.setValueAtTime(this.settings.volumeGain, t);
       }
     }
+  }
 
+  public applySettings(newSettings: Partial<AudioEnhancerSettings>): void {
+    this.settings = { ...this.settings, ...newSettings };
+
+    // Auto-attach if video element exists and DSP is turned on
+    if (!this.attachedMediaElement && typeof document !== 'undefined') {
+      const video = document.querySelector('video');
+      if (video) {
+        this.attachToElement(video);
+      }
+    }
+
+    this.updateDspNodes();
+    // Notify all UI listeners immediately
     this.notify();
   }
 
@@ -274,7 +286,20 @@ class AudioEnhancerEngine {
   }
 
   public toggle(): void {
-    this.applySettings({ enabled: !this.settings.enabled });
+    const nextEnabled = !this.settings.enabled;
+    if (nextEnabled) {
+      this.resumeContext();
+      if (!this.attachedMediaElement && typeof document !== 'undefined') {
+        const video = document.querySelector('video');
+        if (video) this.attachToElement(video);
+      }
+      // If currently original, switch to cam_cleaner preset
+      if (this.settings.preset === 'original') {
+        this.applySettings({ ...PRESET_CONFIGS.cam_cleaner, enabled: true });
+        return;
+      }
+    }
+    this.applySettings({ enabled: nextEnabled });
   }
 
   public getSettings(): AudioEnhancerSettings {
