@@ -651,6 +651,16 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onError={() => {
+          // If remux stream encounters error, fallback to proxy-stream
+          if (!hasTriedFallback && currentStreamSrc.includes('/api/remux-stream') && rawStreamUrl && !video.isLocal) {
+            console.warn('Remux stream encountered error, attempting proxy stream fallback:', rawStreamUrl);
+            setHasTriedFallback(true);
+            setAudioMode('direct');
+            setCurrentStreamSrc(video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`);
+            setIsLoadingStream(true);
+            return;
+          }
+
           // If proxy stream fails and we haven't tried direct streaming yet, fallback to raw direct URL
           if (!hasTriedFallback && currentStreamSrc.includes('/api/proxy-stream') && rawStreamUrl && !video.isLocal) {
             console.warn('Proxy stream encountered error, attempting direct stream fallback:', rawStreamUrl);

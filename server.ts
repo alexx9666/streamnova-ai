@@ -41,6 +41,15 @@ const ai = new GoogleGenAI({
   },
 });
 
+// Ensure ffmpeg binary has execution permissions on Linux/macOS
+if (ffmpegStatic && typeof ffmpegStatic === 'string' && process.platform !== 'win32') {
+  try {
+    fs.chmodSync(ffmpegStatic, 0o755);
+  } catch (err) {
+    console.warn('Could not chmod ffmpeg binary:', err);
+  }
+}
+
 /**
  * Health check & status
  */
@@ -48,7 +57,27 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     hasApiKey: !!process.env.GEMINI_API_KEY,
+    hasFfmpeg: !!ffmpegStatic && fs.existsSync(ffmpegStatic),
     timestamp: new Date().toISOString(),
+  });
+});
+
+/**
+ * Debug endpoint to test FFmpeg functionality on server
+ */
+app.get('/api/debug-ffmpeg', (req, res) => {
+  const ffmpegBin = (typeof ffmpegStatic === 'string' && ffmpegStatic) ? ffmpegStatic : 'ffmpeg';
+  const exists = fs.existsSync(ffmpegBin);
+  const cp = spawn(ffmpegBin, ['-version']);
+  let stdout = '';
+  let stderr = '';
+  cp.stdout?.on('data', (d) => { stdout += d.toString(); });
+  cp.stderr?.on('data', (d) => { stderr += d.toString(); });
+  cp.on('error', (err) => {
+    res.json({ ffmpegBin, exists, error: err.message });
+  });
+  cp.on('close', (code) => {
+    res.json({ ffmpegBin, exists, code, version: stdout.slice(0, 200), stderr: stderr.slice(0, 200) });
   });
 });
 
@@ -160,26 +189,34 @@ app.head('/api/proxy-stream', handleProxyStream);
  * 2. Instant fast copy of H.264 video streams (0% CPU, 180x speed) without waiting for 2.5 GB download.
  * 3. Transcoding 5.1 AC3 / EAC3 audio to Universal Stereo AAC (supported on 100% of iOS, Android, Chrome, Safari).
  * 4. Precise seeking via `?ss=<seconds>`.
- * 5. Audio track switching via `?track=hin` (Stream 0:1 Hindi) or `?track=eng` (Stream 0:2 English).
+ * 5. Audio track switching via `?track=0` (Hindi) or `?track=1` (English).
  */
-app.get('/api/remux-stream', (req: Request, res: Response) => {
+const handleRemuxStream = (req: Request, res: Response) => {
   const targetUrl = req.query.url as string;
   if (!targetUrl) {
     return res.status(400).send('Missing "url" parameter');
   }
-
-  const ss = (req.query.ss as string) || '0';
-  const track = (req.query.track as string) || '0';
 
   res.setHeader('Content-Type', 'video/mp4');
   res.setHeader('Accept-Ranges', 'none');
   res.setHeader('Content-Disposition', 'inline');
   res.setHeader('Cache-Control', 'no-cache, no-store');
 
+  if (req.method === 'HEAD') {
+    return res.sendStatus(200);
+  }
+
+  const ss = (req.query.ss as string) || '0';
+  const track = (req.query.track as string) || '0';
+
   const args: string[] = [
     '-hide_banner',
     '-loglevel', 'error',
     '-headers', 'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36\r\n',
+    '-reconnect', '1',
+    '-reconnect_at_eof', '1',
+    '-reconnect_streamed', '1',
+    '-reconnect_delay_max', '5',
   ];
 
   const seekSec = parseFloat(ss);
@@ -209,6 +246,7 @@ app.get('/api/remux-stream', (req: Request, res: Response) => {
   args.push('-c:a', 'aac', '-b:a', '192k', '-ac', '2');
   // Fragmented MP4 for immediate real-time browser playback
   args.push('-movflags', 'frag_keyframe+empty_moov+default_base_moof');
+  args.push('-frag_duration', '500000');
   args.push('-f', 'mp4');
   args.push('pipe:1');
 
@@ -233,7 +271,10 @@ app.get('/api/remux-stream', (req: Request, res: Response) => {
       // ignore
     }
   });
-});
+};
+
+app.get('/api/remux-stream', handleRemuxStream);
+app.head('/api/remux-stream', handleRemuxStream);
 
 // In-memory cache for generated TTS audio to prevent redundant API calls
 const ttsAudioCache = new Map<string, { audioBase64: string; mimeType: string; dataUri: string }>();
@@ -244,13 +285,57 @@ const ttsAudioCache = new Map<string, { audioBase64: string; mimeType: string; d
  */
 async function resolveHubCloud(hubUrl: string) {
   try {
-    const res1 = await fetch(hubUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-      },
-      redirect: 'follow',
-    });
-    const html1 = await res1.text();
+    let urlObj: URL | null = null;
+    try {
+      urlObj = new URL(hubUrl);
+    } catch {
+      // not a valid url object
+    }
+
+    const domainsToTry = urlObj
+      ? Array.from(new Set([
+          urlObj.hostname,
+          'hubcloud.lat',
+          'hubcloud.ink',
+          'hubcloud.dad',
+          'hubcloud.one',
+          'hubcloud.fit',
+          'hubcloud.ist',
+        ]))
+      : [hubUrl];
+
+    let html1 = '';
+    let effectiveHubUrl = hubUrl;
+
+    for (const domain of domainsToTry) {
+      try {
+        const candidateUrl = urlObj
+          ? `https://${domain}${urlObj.pathname}${urlObj.search}`
+          : hubUrl;
+
+        const res1 = await fetch(candidateUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+          },
+          redirect: 'follow',
+        });
+
+        if (res1.ok) {
+          const text = await res1.text();
+          if (text && !text.includes('404 ! File Not Found') && text.length > 500) {
+            html1 = text;
+            effectiveHubUrl = candidateUrl;
+            break;
+          }
+        }
+      } catch (e) {
+        // try next domain
+      }
+    }
+
+    if (!html1) {
+      return null;
+    }
 
     // Extract Title
     let title = 'HubCloud Movie Stream';
@@ -272,32 +357,45 @@ async function resolveHubCloud(hubUrl: string) {
       }
     }
 
+    const servers: { name: string; url: string; isPrimary: boolean }[] = [];
+    let embedUrl: string | null = null;
+
     // Extract generator link (gamerxyt.com/hubcloud.php?...)
     const genMatch = html1.match(/https?:\/\/[^"'\s<>]+\/hubcloud\.php\?[^"'\s<>]+/i) ||
                      html1.match(/var\s+url\s*=\s*['"](https?:\/\/[^'"]+)['"]/i);
 
-    const servers: { name: string; url: string; isPrimary: boolean }[] = [];
-    let embedUrl: string | null = null;
-
+    let html2 = '';
     if (genMatch) {
-      const genUrl = (genMatch[1] || genMatch[0]).replace(/&amp;/g, '&');
-      const res2 = await fetch(genUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-          'Referer': hubUrl,
-        },
-        redirect: 'follow',
-      });
-      const html2 = await res2.text();
+      try {
+        const genUrl = (genMatch[1] || genMatch[0]).replace(/&amp;/g, '&');
+        const res2 = await fetch(genUrl, {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Referer': effectiveHubUrl,
+          },
+          redirect: 'follow',
+        });
+        if (res2.ok) {
+          html2 = await res2.text();
+        }
+      } catch (err) {
+        console.warn('Failed fetching HubCloud generator page:', err);
+      }
+    }
 
+    const htmlSources = [html1, html2].filter(Boolean);
+
+    for (const html of htmlSources) {
       // Extract Watch Online Player URL
-      const embedMatch = html2.match(/href=["'](https?:\/\/hbplay\.pages\.dev\/\?u=[^"'\s<>]+)["']/i);
-      if (embedMatch) {
-        embedUrl = embedMatch[1].replace(/&amp;/g, '&');
+      if (!embedUrl) {
+        const embedMatch = html.match(/href=["'](https?:\/\/hbplay\.pages\.dev\/\?u=[^"'\s<>]+)["']/i);
+        if (embedMatch) {
+          embedUrl = embedMatch[1].replace(/&amp;/g, '&');
+        }
       }
 
       // Match Direct Ultra-Fast CDN links (e.g. cdn.*.guru, snvhost, etc.)
-      const cdnMatches = Array.from(html2.matchAll(/href=["'](https?:\/\/[^"'\s<>]+\.(?:guru|snvhost|stream|download|live)[^"'\s<>]*\.(?:mkv|mp4)[^"'\s<>]*)["']/gi));
+      const cdnMatches = Array.from(html.matchAll(/href=["'](https?:\/\/[^"'\s<>]+\.(?:guru|snvhost|stream|download|live|store)[^"'\s<>]*\.(?:mkv|mp4)[^"'\s<>]*)["']/gi));
       cdnMatches.forEach((m) => {
         const cdnUrl = m[1].replace(/&amp;/g, '&');
         if (!servers.some(s => s.url === cdnUrl)) {
@@ -310,7 +408,7 @@ async function resolveHubCloud(hubUrl: string) {
       });
 
       // Match Cloudflare R2 direct stream links
-      const r2Matches = Array.from(html2.matchAll(/href=["'](https:\/\/[^"'\s<>]+\.r2\.cloudflarestorage\.com\/[^"'\s<>]+)["']/gi));
+      const r2Matches = Array.from(html.matchAll(/href=["'](https:\/\/[^"'\s<>]+\.r2\.cloudflarestorage\.com\/[^"'\s<>]+)["']/gi));
       r2Matches.forEach((m, idx) => {
         const r2Url = m[1].replace(/&amp;/g, '&');
         if (!servers.some(s => s.url === r2Url)) {
@@ -323,7 +421,7 @@ async function resolveHubCloud(hubUrl: string) {
       });
 
       // Match PixelDrain link
-      const pixelMatch = html2.match(/href=["'](https?:\/\/pixeldrain\.[^"'\s<>]+\/u\/([a-zA-Z0-9]+))["']/i);
+      const pixelMatch = html.match(/href=["'](https?:\/\/pixeldrain\.[^"'\s<>]+\/u\/([a-zA-Z0-9]+))["']/i);
       if (pixelMatch) {
         const fileId = pixelMatch[2];
         const pixelUrl = `https://pixeldrain.com/api/file/${fileId}`;
@@ -337,7 +435,7 @@ async function resolveHubCloud(hubUrl: string) {
       }
 
       // Match Buzz Server or other server links
-      const buzzMatch = html2.match(/href=["'](https?:\/\/fuckingfast\.net\/[^"'\s<>]+)["']/i);
+      const buzzMatch = html.match(/href=["'](https?:\/\/fuckingfast\.net\/[^"'\s<>]+)["']/i);
       if (buzzMatch) {
         const buzzUrl = buzzMatch[1].replace(/&amp;/g, '&');
         if (!servers.some(s => s.url === buzzUrl)) {
