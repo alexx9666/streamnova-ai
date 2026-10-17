@@ -1,0 +1,6 @@
+{
+  "name": "StreamNova AI - Smart Buffer & Live Hindi Dub Player",
+  "description": "Mobile-first video player featuring smart background chunk buffering, session auto-restore, HTTP range proxy, and real-time AI dialogue translation with synchronized Hindi voice dubbing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
