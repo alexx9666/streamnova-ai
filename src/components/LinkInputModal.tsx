@@ -36,12 +36,16 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
       try {
         const res = await fetch(`/api/resolve-link?url=${encodeURIComponent(target)}`);
         const data = await res.json();
-        if (res.ok && data?.finalUrl) {
-          handleApplyResolved(data.finalUrl, data.title, data.sizeBytes, data.servers);
+        if (res.ok && data?.finalUrl && data?.isHubCloudResolved) {
+          handleApplyResolved(data.finalUrl, data.title, data.sizeBytes, data.servers, data);
+          return;
+        } else {
+          setErrorMsg(data?.details || data?.error || 'This HubCloud link has expired or the file was deleted (404 File Not Found). Please provide an active stream link.');
           return;
         }
-      } catch (err) {
-        // Fallback to direct stream below
+      } catch (err: any) {
+        setErrorMsg(err.message || 'Could not connect to link resolver');
+        return;
       } finally {
         setIsResolving(false);
       }
@@ -75,11 +79,19 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
     }
   };
 
-  const handleApplyResolved = (streamUrl: string, title?: string, sizeBytes?: number, servers?: any[]) => {
+  const handleApplyResolved = (
+    streamUrl: string,
+    title?: string,
+    sizeBytes?: number,
+    servers?: any[],
+    fullData?: any
+  ) => {
     const isMkv = !!(
       streamUrl.toLowerCase().includes('.mkv') ||
       (title && title.toLowerCase().includes('.mkv')) ||
+      (fullData?.title && fullData.title.toLowerCase().includes('.mkv')) ||
       (resolveResult?.title && resolveResult.title.toLowerCase().includes('.mkv')) ||
+      fullData?.isMkv ||
       resolveResult?.isMkv
     );
 
@@ -87,19 +99,19 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
 
     const videoSource: VideoSource = {
       id: `stream_${Date.now()}`,
-      title: title || resolveResult?.title || 'Custom Video Stream',
+      title: title || fullData?.title || resolveResult?.title || 'Custom Video Stream',
       url: streamUrl,
       proxyUrl: streamProxyUrl,
-      sizeBytes: sizeBytes || resolveResult?.sizeBytes || 80 * 1024 * 1024,
-      duration: resolveResult?.duration || 0,
+      sizeBytes: sizeBytes || fullData?.sizeBytes || resolveResult?.sizeBytes || 80 * 1024 * 1024,
+      duration: fullData?.duration || resolveResult?.duration || 0,
       isMkv,
-      remuxUrl: resolveResult?.remuxUrl,
-      audioTracks: resolveResult?.audioTracks,
-      description: resolveResult?.isHubCloudResolved
+      remuxUrl: fullData?.remuxUrl || resolveResult?.remuxUrl,
+      audioTracks: fullData?.audioTracks || resolveResult?.audioTracks,
+      description: (fullData?.isHubCloudResolved || resolveResult?.isHubCloudResolved)
         ? 'High-speed stream with zero-buffer background cache and audio clarity engine'
         : 'Direct Range Stream with Zero-Buffer Engine',
-      servers: servers || resolveResult?.servers,
-      embedUrl: resolveResult?.embedUrl,
+      servers: servers || fullData?.servers || resolveResult?.servers,
+      embedUrl: fullData?.embedUrl || resolveResult?.embedUrl,
     };
 
     onSelectVideo(videoSource);
@@ -255,23 +267,25 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
                 </div>
               </div>
 
-              {/* Error Message with Play Anyway option */}
+              {/* Error Message */}
               {errorMsg && (
                 <div className="p-3 bg-red-950/40 border border-red-800/60 rounded-xl text-xs text-red-300 space-y-2">
                   <div className="flex items-start gap-2">
                     <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                     <div>
-                      <p className="font-semibold">Inspection notice</p>
-                      <p className="text-[11px] text-red-300/80 mt-0.5">{errorMsg}</p>
+                      <p className="font-semibold">Stream Notice</p>
+                      <p className="text-[11px] text-red-300/80 mt-0.5 leading-relaxed">{errorMsg}</p>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handlePlayDirect(urlInput)}
-                    className="w-full py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
-                  >
-                    <Play className="w-3 h-3 fill-current" />
-                    <span>Play Anyway (Direct Stream Proxy)</span>
-                  </button>
+                  {!urlInput.includes('hubcloud') && !urlInput.includes('gamerxyt') && (
+                    <button
+                      onClick={() => handlePlayDirect(urlInput)}
+                      className="w-full py-1.5 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-lg transition-colors flex items-center justify-center gap-1 cursor-pointer"
+                    >
+                      <Play className="w-3 h-3 fill-current" />
+                      <span>Play Anyway (Direct Stream Proxy)</span>
+                    </button>
+                  )}
                 </div>
               )}
 
@@ -295,7 +309,7 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
                   </div>
 
                   <button
-                    onClick={() => handleApplyResolved(resolveResult.finalUrl, resolveResult.title, resolveResult.sizeBytes, resolveResult.servers)}
+                    onClick={() => handleApplyResolved(resolveResult.finalUrl, resolveResult.title, resolveResult.sizeBytes, resolveResult.servers, resolveResult)}
                     className="w-full py-2 bg-red-600 hover:bg-red-700 text-white font-bold text-xs rounded-xl transition-all shadow-md shadow-red-600/30 flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />

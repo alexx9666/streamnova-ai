@@ -308,11 +308,8 @@ async function resolveHubCloud(hubUrl: string) {
 
     const domainsToTry = urlObj
       ? Array.from(new Set([
-          urlObj.hostname,
-          'hubcloud.lat',
-          'hubcloud.ink',
-          'hubcloud.dad',
           'hubcloud.one',
+          urlObj.hostname,
           'hubcloud.fit',
           'hubcloud.ist',
         ]))
@@ -336,7 +333,12 @@ async function resolveHubCloud(hubUrl: string) {
 
         if (res1.ok) {
           const text = await res1.text();
-          if (text && !text.includes('404 ! File Not Found') && text.length > 500) {
+          if (
+            text &&
+            !text.includes('404 ! File Not Found') &&
+            !text.includes('subid1=') &&
+            (text.includes('hubcloud.php') || text.includes('gamerxyt') || text.includes('card-header') || text.includes('File Size'))
+          ) {
             html1 = text;
             effectiveHubUrl = candidateUrl;
             break;
@@ -534,6 +536,12 @@ app.get('/api/resolve-link', async (req: Request, res: Response) => {
           extractedDirectLinks: hubData.servers.map(s => s.url),
         });
       }
+
+      return res.status(404).json({
+        error: 'HubCloud link inactive or file deleted',
+        details: 'This HubCloud link returned 404 (File Not Found) from HubCloud servers. The file was deleted or the link has expired. Please provide an active movie stream link.',
+        isExpiredHubCloud: true,
+      });
     }
 
     // Standard direct link inspection
