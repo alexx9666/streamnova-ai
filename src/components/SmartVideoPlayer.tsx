@@ -81,17 +81,19 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
   const controlsTimeoutRef = useRef<any>(null);
   const prefetchUnsubscribeRef = useRef<(() => void) | null>(null);
 
-  // Effective Stream URL: Always use HTTP 206 range proxy for seamless seeking
+  // Stream URL controller with automatic fallback to direct URL
   const rawStreamUrl = video.url;
-  const effectiveStreamUrl = video.isLocal && video.file
+  const initialStreamUrl = video.isLocal && video.file
     ? URL.createObjectURL(video.file)
     : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(rawStreamUrl)}`);
+
+  const [currentStreamSrc, setCurrentStreamSrc] = useState<string>(initialStreamUrl);
+  const [hasTriedFallback, setHasTriedFallback] = useState<boolean>(false);
 
   // Subscribe to Audio Enhancer Engine changes
   useEffect(() => {
     const unsub = audioEnhancerEngine.subscribe((s) => {
       setAudioSettings(s);
-      // Only attach Web Audio when DSP is explicitly enabled by user
       if (s.enabled && videoRef.current) {
         audioEnhancerEngine.attachToElement(videoRef.current);
         audioEnhancerEngine.resumeContext();
@@ -102,29 +104,20 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
 
   // Reset states when video changes
   useEffect(() => {
+    const nextUrl = video.isLocal && video.file
+      ? URL.createObjectURL(video.file)
+      : (video.proxyUrl || `/api/proxy-stream?url=${encodeURIComponent(video.url)}`);
+    setCurrentStreamSrc(nextUrl);
+    setHasTriedFallback(false);
     setIsPlaying(false);
     setVideoError(null);
-    setIsLoadingStream(true);
+    setIsLoadingStream(false);
     setIsSeeking(false);
     setIsScrubbing(false);
     setCurrentTime(0);
     setScrubTime(0);
     if (video.duration) {
       setDuration(video.duration);
-    }
-    // Auto-load and attempt autoplay for newly inserted streams
-    if (videoRef.current) {
-      videoRef.current.load();
-      videoRef.current.play().then(() => {
-        setIsPlaying(true);
-        setIsLoadingStream(false);
-        if (audioSettings.enabled && videoRef.current) {
-          audioEnhancerEngine.attachToElement(videoRef.current);
-          audioEnhancerEngine.resumeContext();
-        }
-      }).catch(() => {
-        setIsLoadingStream(false);
-      });
     }
   }, [video.id, video.url]);
 
@@ -153,7 +146,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
     const totalBytes = video.sizeBytes || 80 * 1024 * 1024;
     prefetchUnsubscribeRef.current = videoCacheEngine.startBackgroundPrefetch(
       video.id,
-      effectiveStreamUrl,
+      currentStreamSrc,
       totalBytes,
       currentTime > 0 && duration > 0 ? currentTime / duration : 0,
       (cachedBytes, percentage, speedBps) => {
@@ -174,7 +167,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         prefetchUnsubscribeRef.current = null;
       }
     };
-  }, [video.id, effectiveStreamUrl, video.sizeBytes, video.isLocal, streamingMode]);
+  }, [video.id, currentStreamSrc, video.sizeBytes, video.isLocal, streamingMode]);
 
   // Track playback time
   const handleTimeUpdate = () => {
@@ -210,10 +203,14 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         audioEnhancerEngine.attachToElement(videoRef.current);
         audioEnhancerEngine.resumeContext();
       }
+      setIsLoadingStream(true);
       videoRef.current.play().then(() => {
         setIsPlaying(true);
         setIsLoadingStream(false);
-      }).catch(() => {});
+      }).catch((err) => {
+        console.warn('Play attempt error:', err);
+        setIsLoadingStream(false);
+      });
       scheduleControlsHide();
     }
   };
@@ -236,7 +233,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
       const totalBytes = video.sizeBytes || 80 * 1024 * 1024;
       prefetchUnsubscribeRef.current = videoCacheEngine.seekPrefetch(
         video.id,
-        effectiveStreamUrl,
+        currentStreamSrc,
         totalBytes,
         safeTarget / duration,
         (cachedBytes, percentage, speedBps) => {
@@ -510,7 +507,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
       {/* Native Range-Stream Video Element (Unrestricted native audio) */}
       <video
         ref={videoRef}
-        src={effectiveStreamUrl}
+        src={currentStreamSrc}
         className={`w-full h-full ${
           aspectRatio === 'cover'
             ? 'object-cover'
@@ -518,7 +515,7 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
             ? 'object-fill'
             : 'object-contain'
         }`}
-        crossOrigin="anonymous"
+        crossOrigin={audioSettings.enabled ? 'anonymous' : undefined}
         playsInline
         preload="auto"
         onTimeUpdate={handleTimeUpdate}
@@ -557,6 +554,15 @@ export const SmartVideoPlayer: React.FC<SmartVideoPlayerProps> = ({
         onPlay={() => setIsPlaying(true)}
         onPause={() => setIsPlaying(false)}
         onError={() => {
+          // If proxy stream fails and we haven't tried direct streaming yet, fallback to raw direct URL
+          if (!hasTriedFallback && currentStreamSrc.includes('/api/proxy-stream') && rawStreamUrl && !video.isLocal) {
+            console.warn('Proxy stream encountered error, attempting direct stream fallback:', rawStreamUrl);
+            setHasTriedFallback(true);
+            setCurrentStreamSrc(rawStreamUrl);
+            setIsLoadingStream(true);
+            return;
+          }
+
           setIsLoadingStream(false);
           setIsPlaying(false);
           setVideoError({
