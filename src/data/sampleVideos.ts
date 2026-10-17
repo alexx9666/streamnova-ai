@@ -7,8 +7,6 @@ export const SAMPLE_VIDEOS: VideoSource[] = [
     description: 'High-octane action thriller starring Rajinikanth. Tested with Cam Audio Cleaner and zero-buffer streaming.',
     url: 'https://cdn.valentine.guru/Jailer-2.2026.HQ.1080p.V2-HDTC.Hindi-Tamil-Telugu-Kannada.LiNE.x264-HDHub4u.Ag.mkv?token=3ae60cb6a88fca3160e4fe55c857eb08',
     proxyUrl: '/api/proxy-stream?url=' + encodeURIComponent('https://cdn.valentine.guru/Jailer-2.2026.HQ.1080p.V2-HDTC.Hindi-Tamil-Telugu-Kannada.LiNE.x264-HDHub4u.Ag.mkv?token=3ae60cb6a88fca3160e4fe55c857eb08'),
-    remuxUrl: '/api/remux-stream?url=' + encodeURIComponent('https://cdn.valentine.guru/Jailer-2.2026.HQ.1080p.V2-HDTC.Hindi-Tamil-Telugu-Kannada.LiNE.x264-HDHub4u.Ag.mkv?token=3ae60cb6a88fca3160e4fe55c857eb08') + '&track=hin',
-    embedUrl: 'https://hbplay.pages.dev/?u=aHR0cHM6Ly9jZG4udmFsZW50aW5lLmd1cnUvSmFpbGVyLTIuMjAyNi5IUS4xMDgwcC5WMi1IRFRDLkhpbmRpLVRhbWlsLVRlbHVndS1LYW5uYWRhLkxpTkUueDI2NC1IREh1YjR1LkFnLm1rdj90b2tlbj0zYWU2MGNiNmE4OGZjYTMxNjBlNGZlNTVjODU3ZWIwOA==&m=video/x-matroska',
     thumbnailUrl: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=600&auto=format&fit=crop&q=80',
     duration: 8460,
     isMkv: true,

@@ -50,10 +50,7 @@ export const LinkInputModal: React.FC<LinkInputModalProps> = ({
   };
 
   const handleApplyResolved = (streamUrl: string, title?: string, sizeBytes?: number, servers?: any[]) => {
-    const isMkv = streamUrl.includes('.mkv') || (resolveResult?.title && resolveResult.title.toLowerCase().includes('.mkv')) || !!resolveResult?.isMkv;
-    const streamProxyUrl = isMkv
-      ? `/api/remux-stream?url=${encodeURIComponent(streamUrl)}&track=hin`
-      : `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
+    const streamProxyUrl = `/api/proxy-stream?url=${encodeURIComponent(streamUrl)}`;
 
     const videoSource: VideoSource = {
       id: `stream_${Date.now()}`,

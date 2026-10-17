@@ -214,7 +214,7 @@ app.get('/api/remux-stream', (req: Request, res: Response) => {
   ffmpegProcess.on('error', (err) => {
     console.error('ffmpeg process error:', err);
     if (!res.headersSent) {
-      res.status(500).send('FFmpeg stream remuxing error');
+      res.redirect(`/api/proxy-stream?url=${encodeURIComponent(targetUrl)}`);
     }
   });
 
@@ -390,10 +390,8 @@ app.get('/api/resolve-link', async (req: Request, res: Response) => {
               { id: 'eng', name: 'English (Original 5.1 EAC3)', trackIdx: 1 },
             ];
 
-        // For MKV videos, remux stream is default so it plays natively in HTML5 <video> with 0 stalls
-        const streamProxyUrl = isMkv
-          ? `/api/remux-stream?url=${encodeURIComponent(primaryServer.url)}&track=hin`
-          : `/api/proxy-stream?url=${encodeURIComponent(primaryServer.url)}`;
+        // Use Range-supporting proxy-stream so browser can seek to any second with HTTP 206
+        const streamProxyUrl = `/api/proxy-stream?url=${encodeURIComponent(primaryServer.url)}`;
 
         return res.json({
           originalUrl: targetUrl,
@@ -411,9 +409,7 @@ app.get('/api/resolve-link', async (req: Request, res: Response) => {
           embedUrl: hubData.embedUrl,
           servers: hubData.servers.map(s => ({
             ...s,
-            proxyUrl: isMkv
-              ? `/api/remux-stream?url=${encodeURIComponent(s.url)}&track=hin`
-              : `/api/proxy-stream?url=${encodeURIComponent(s.url)}`,
+            proxyUrl: `/api/proxy-stream?url=${encodeURIComponent(s.url)}`,
           })),
           extractedDirectLinks: hubData.servers.map(s => s.url),
         });

@@ -325,9 +325,25 @@ class VideoCacheEngine {
   stopBackgroundPrefetch(videoId: string): void {
     const controller = this.activePrefetchControllers.get(videoId);
     if (controller) {
-      controller.abort();
+      try {
+        controller.abort();
+      } catch {}
       this.activePrefetchControllers.delete(videoId);
     }
+  }
+
+  /**
+   * Immediately reprioritizes prefetch ahead of a new seek position
+   */
+  seekPrefetch(
+    videoId: string,
+    streamUrl: string,
+    totalBytes: number,
+    newPlaybackRatio: number,
+    onProgress?: (cachedBytes: number, percentage: number, speedBps: number) => void
+  ): () => void {
+    this.stopBackgroundPrefetch(videoId);
+    return this.startBackgroundPrefetch(videoId, streamUrl, totalBytes, newPlaybackRatio, onProgress);
   }
 
   /**
